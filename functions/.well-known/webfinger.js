@@ -6,7 +6,10 @@ export async function onRequest(context) {
     return new Response(
       JSON.stringify({
         subject: "acct:joshch@mbe.rs",
-        aliases: ["https://mastodon.social/@mbers"],
+        aliases: [
+          "https://mbe.rs/@joshch",
+          "https://mbe.rs/users/joshch"
+        ],
         links: [
           {
             rel: "self",
@@ -16,7 +19,11 @@ export async function onRequest(context) {
           {
             rel: "http://webfinger.net/rel/profile-page",
             type: "text/html",
-            href: "https://mastodon.social/@mbers"
+            href: "https://mbe.rs/@joshch"
+          },
+          {
+            rel: "http://ostatus.org/schema/1.0/subscribe",
+            template: "https://mastodon.social/authorize_interaction?uri={uri}"
           }
         ]
       }),
