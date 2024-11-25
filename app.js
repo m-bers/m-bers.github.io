@@ -9,12 +9,23 @@ async function fetchBlueskyFeed() {
     return data.feed;
 }
 
-// Recursively render posts and replies
-function renderPost(post, level = 0) {
-    const { author, record, replyCount } = post;
-    const padding = 20 * level; // Indent replies based on nesting level
+// Helper to fetch a post by its URI
+async function fetchPostByURI(uri) {
+    const response = await fetch(uri.replace('at://', 'https://public.api.bsky.app/xrpc/app.bsky.feed.getPost?uri='));
+    if (!response.ok) {
+        console.warn(`Failed to fetch post: ${uri}`);
+        return null;
+    }
+    const data = await response.json();
+    return data.post || null;
+}
 
-    let postHTML = `
+// Render a single post (with author and content)
+function renderSinglePost(post, level = 0) {
+    const { author, record } = post;
+    const padding = 20 * level; // Indent replies
+
+    return `
         <div class="bluesky-post" style="margin-left: ${padding}px;">
             <div class="bluesky-author">
                 <img src="${author.avatar}" alt="${author.displayName}" class="bluesky-avatar">
@@ -26,38 +37,41 @@ function renderPost(post, level = 0) {
             <div class="bluesky-content">
                 <p>${record.text}</p>
             </div>
-            <div class="bluesky-stats">
-                <span>❤️ ${post.likeCount || 0}</span>
-                <span>🔄 ${post.repostCount || 0}</span>
-                <span>💬 ${replyCount || 0}</span>
-            </div>
         </div>
     `;
+}
 
-    // Check for nested replies
-    if (post.reply) {
-        const replyRoot = post.reply.root || post.reply.parent; // Choose the root or parent for threading
-        if (replyRoot) {
-            postHTML += renderPost(replyRoot, level + 1); // Render the reply recursively
+// Recursively render posts and their replies
+async function renderPostWithReplies(post, level = 0) {
+    let postHTML = '';
+
+    // Render parent context
+    if (post.record.reply?.parent) {
+        const parent = await fetchPostByURI(post.record.reply.parent.uri);
+        if (parent) {
+            postHTML += await renderPostWithReplies(parent, level);
         }
     }
+
+    // Render current post
+    postHTML += renderSinglePost(post, level);
 
     return postHTML;
 }
 
 // Render the entire feed
-function renderBlueskyFeed(feed) {
+async function renderBlueskyFeed(feed) {
     const container = document.getElementById('bluesky-feed');
     container.innerHTML = ''; // Clear previous content
 
-    feed.forEach(item => {
-        const postHTML = renderPost(item.post);
+    for (const item of feed) {
+        const postHTML = await renderPostWithReplies(item.post);
         container.innerHTML += postHTML;
-    });
+    }
 }
 
 // Fetch and render the feed on page load
 document.addEventListener('DOMContentLoaded', async () => {
     const feed = await fetchBlueskyFeed();
-    renderBlueskyFeed(feed);
+    await renderBlueskyFeed(feed);
 });
