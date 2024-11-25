@@ -9,12 +9,12 @@ async function fetchBlueskyFeed() {
     return data.feed;
 }
 
-// Render a single post or reply
+// Recursively render posts and replies
 function renderPost(post, level = 0) {
-    const padding = 20 * level; // Indentation for nested replies
     const { author, record, replyCount } = post;
+    const padding = 20 * level; // Indent replies based on nesting level
 
-    return `
+    let postHTML = `
         <div class="bluesky-post" style="margin-left: ${padding}px;">
             <div class="bluesky-author">
                 <img src="${author.avatar}" alt="${author.displayName}" class="bluesky-avatar">
@@ -33,35 +33,16 @@ function renderPost(post, level = 0) {
             </div>
         </div>
     `;
-}
 
-// Recursively render replies, including parent and root context
-function renderThread(post, feed, level = 0) {
-    // Render the current post
-    let threadHTML = renderPost(post, level);
-
-    // Check if the post has a reply context (parent or root)
+    // Check for nested replies
     if (post.reply) {
-        const { parent, root } = post.reply;
-
-        // If a parent exists, find it in the feed and render it
-        if (parent) {
-            const parentPost = feed.find(item => item.post.uri === parent.uri);
-            if (parentPost) {
-                threadHTML = renderThread(parentPost.post, feed, level - 1) + threadHTML;
-            }
-        }
-
-        // If a root exists, ensure it precedes all replies
-        if (root && root.uri !== parent?.uri) {
-            const rootPost = feed.find(item => item.post.uri === root.uri);
-            if (rootPost) {
-                threadHTML = renderThread(rootPost.post, feed, level - 1) + threadHTML;
-            }
+        const replyRoot = post.reply.root || post.reply.parent; // Choose the root or parent for threading
+        if (replyRoot) {
+            postHTML += renderPost(replyRoot, level + 1); // Render the reply recursively
         }
     }
 
-    return threadHTML;
+    return postHTML;
 }
 
 // Render the entire feed
@@ -70,10 +51,7 @@ function renderBlueskyFeed(feed) {
     container.innerHTML = ''; // Clear previous content
 
     feed.forEach(item => {
-        const post = item.post;
-
-        // Check if it's a reply; render thread if true, or standalone post otherwise
-        const postHTML = post.reply ? renderThread(post, feed) : renderPost(post);
+        const postHTML = renderPost(item.post);
         container.innerHTML += postHTML;
     });
 }

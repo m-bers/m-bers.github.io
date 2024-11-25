@@ -18,7 +18,7 @@ h1 {
     margin: 0 auto;
 }
 
-.bluesky-post, .bluesky-reply {
+.bluesky-post {
     background-color: #fff;
     border: 1px solid #ddd;
     padding: 15px;
@@ -53,12 +53,4 @@ h1 {
     color: #333;
 }
 
-.bluesky-stats {
-    margin-top: 10px;
-    color: gray;
-    font-size: 0.9em;
-}
-
-.bluesky-stats span {
-    margin-right: 10px;
-}
+.bl
