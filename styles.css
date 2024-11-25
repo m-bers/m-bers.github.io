@@ -18,7 +18,7 @@ h1 {
     margin: 0 auto;
 }
 
-.bluesky-post {
+.bluesky-post, .bluesky-reply {
     background-color: #fff;
     border: 1px solid #ddd;
     padding: 15px;
