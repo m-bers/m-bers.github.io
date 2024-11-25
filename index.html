@@ -6,6 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="authorization_endpoint" href="https://indieauth.com/auth">
   <link rel="token_endpoint" href="https://tokens.indieauth.com/token">
+  <link rel="stylesheet" href="styles.css">
   <!-- To use social readers via microsub, follow these steps.
     (Details: https://indieweb.org/Microsub#Getting_Started)
     1. After publishing this to your domain, sign in to https://aperture.p3k.io/login with your domain
@@ -15,12 +16,13 @@
     4. Publish the updated page!
    -->
   <title>Hello</title>
+  
   <style>
     @media (prefers-color-scheme: dark) {
       html { background-color: #111111; color: #fbfbfb; }
       a { color: #ca8465; }
     }
-    body {
+    /* body {
       line-height: 1.6;
       font-family: system-ui, -apple-system, BlinkMacSystemFont, Roboto, Helvetica, Arial, sans-serif;
       text-align: center;
@@ -32,7 +34,7 @@
       align-items: center;
     }
     img.u-photo { border-radius: 50%; }
-    ul { padding: 0; list-style: none; }
+    ul { padding: 0; list-style: none; } */
   </style>
 </head>
 
@@ -61,7 +63,11 @@
       <li>Email: <a class="u-url" href="mailto:joshch@mbe.rs" rel="me">joshch@mbe.rs</a></li>
       <li>Mastodon: <a class="u-url" href="https://mastodon.social/@mbers" rel="me">@mbers@mastodon.social</a>
     </ul>
-    <blockquote class="bluesky-embed" data-bluesky-uri="at://did:plc:7ro33pumtighq5ssdp57hvr7/app.bsky.feed.post/3lb6vgr2lbk22" data-bluesky-cid="bafyreifnygsiz6pofannm7a7rgobzeaxz5m7jakijc6wgb7yph6vl4f6sq"><p lang="en">Beyond the barricade is there a world you want to see? Then join in the fight that will give you the right to be free!</p>&mdash; Josh Chambers (<a href="https://bsky.app/profile/did:plc:7ro33pumtighq5ssdp57hvr7?ref_src=embed">@joshcha.mbe.rs</a>) <a href="https://bsky.app/profile/did:plc:7ro33pumtighq5ssdp57hvr7/post/3lb6vgr2lbk22?ref_src=embed">November 17, 2024 at 6:41 PM</a></blockquote><script async src="https://embed.bsky.app/static/embed.js" charset="utf-8"></script>
+    <h1>Bluesky Feed</h1>
+    <div id="bluesky-feed">
+        Loading feed...
+    </div>
+    <script src="app.js"></script>
   </main>
 </body>
 

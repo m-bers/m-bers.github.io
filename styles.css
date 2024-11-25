@@ -1,0 +1,64 @@
+body {
+    font-family: Arial, sans-serif;
+    margin: 20px;
+    padding: 0;
+    background-color: #f9f9f9;
+}
+
+h1 {
+    text-align: center;
+    color: #333;
+}
+
+#bluesky-feed {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    max-width: 600px;
+    margin: 0 auto;
+}
+
+.bluesky-post {
+    background-color: #fff;
+    border: 1px solid #ddd;
+    padding: 15px;
+    border-radius: 8px;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.bluesky-author {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.bluesky-avatar {
+    width: 50px;
+    height: 50px;
+    border-radius: 50%;
+}
+
+.bluesky-name {
+    font-weight: bold;
+    color: #333;
+}
+
+.bluesky-handle {
+    color: gray;
+    font-size: 0.9em;
+}
+
+.bluesky-content {
+    margin-top: 10px;
+    color: #333;
+}
+
+.bluesky-stats {
+    margin-top: 10px;
+    color: gray;
+    font-size: 0.9em;
+}
+
+.bluesky-stats span {
+    margin-right: 10px;
+}
