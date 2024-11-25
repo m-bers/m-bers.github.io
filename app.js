@@ -1,6 +1,6 @@
 // Fetch the Bluesky feed
 async function fetchBlueskyFeed() {
-    const response = await fetch('https://public.api.bsky.app/xrpc/app.bsky.feed.getAuthorFeed?actor=did%3Aplc%3A7ro33pumtighq5ssdp57hvr7&filter=posts_and_author_threads&includePins=true&limit=30');
+    const response = await fetch('https://public.api.bsky.app/xrpc/app.bsky.feed.getAuthorFeed?actor=did%3Aplc%3Auyh5huzxtthtkg6htsgt56lh&filter=posts_and_author_threads&includePins=true&limit=30');
     if (!response.ok) {
         console.error('Failed to fetch Bluesky feed');
         return [];
