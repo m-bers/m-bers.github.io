@@ -1,0 +1,116 @@
+#!/data/data/com.termux/files/usr/bin/bash
+set -e
+
+echo "============================================"
+echo "  Termux + Claude Code + Happy Coder Setup"
+echo "============================================"
+echo ""
+
+# --- Step 1: Termux packages ---
+echo "[1/3] Installing proot-distro..."
+pkg update -y
+pkg install -y proot-distro
+
+# --- Step 2: Install Ubuntu in proot ---
+echo ""
+echo "[2/3] Installing Ubuntu via proot-distro..."
+if proot-distro list --installed 2>/dev/null | grep -q ubuntu; then
+  echo "  Ubuntu already installed, skipping."
+else
+  proot-distro install ubuntu
+fi
+
+# --- Step 3: Run inner setup inside proot ---
+echo ""
+echo "[3/3] Bootstrapping inside proot Ubuntu..."
+
+proot-distro login ubuntu -- bash -c 'bash -s' <<'INNER_SCRIPT'
+set -e
+
+echo ""
+echo "=== Inside proot Ubuntu ==="
+echo ""
+
+# --- Install nvm ---
+echo "[proot 1/5] Installing nvm..."
+if [ -d "$HOME/.nvm" ]; then
+  echo "  nvm already installed, skipping."
+else
+  curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
+fi
+
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+
+# --- Install Node ---
+echo ""
+echo "[proot 2/5] Installing Node.js (latest LTS)..."
+if command -v node &>/dev/null; then
+  echo "  Node $(node --version) already installed, skipping."
+else
+  nvm install --lts
+fi
+
+# --- Install Claude Code ---
+echo ""
+echo "[proot 3/5] Installing Claude Code..."
+if command -v claude &>/dev/null; then
+  echo "  Claude Code already installed, skipping."
+else
+  npm install -g @anthropic-ai/claude-code
+fi
+
+# --- Claude Code login (interactive) ---
+echo ""
+echo "============================================"
+echo "[proot 3.5/5] Claude Code login required."
+echo "  Run: claude login"
+echo "  This will open a browser or give you a URL."
+echo "============================================"
+echo ""
+claude login
+echo ""
+echo "Claude Code login complete!"
+
+# --- Install Happy Coder ---
+echo ""
+echo "[proot 4/5] Installing Happy Coder..."
+if command -v happy &>/dev/null; then
+  echo "  Happy Coder already installed, skipping."
+else
+  npm install -g happy-coder
+fi
+
+# --- Happy Coder login (interactive) ---
+echo ""
+echo "============================================"
+echo "[proot 5/5] Happy Coder login required."
+echo "  This will authenticate via Claude Code."
+echo "============================================"
+echo ""
+happy auth login
+echo ""
+echo "Happy Coder login complete!"
+
+# --- Add happy daemon auto-start to .bashrc ---
+if ! grep -q 'happy daemon' ~/.bashrc 2>/dev/null; then
+  echo "" >> ~/.bashrc
+  cat >> ~/.bashrc <<'BASHRC'
+
+# Auto-start Happy Coder daemon
+if command -v happy &>/dev/null && ! happy daemon status 2>/dev/null | grep -q "Daemon is running"; then
+  happy daemon start &>/dev/null &
+fi
+BASHRC
+  echo "Added happy daemon auto-start to .bashrc"
+fi
+
+echo ""
+echo "============================================"
+echo "  Setup complete!"
+echo ""
+echo "  To start: proot-distro login ubuntu"
+echo "  Then run:  happy"
+echo "============================================"
+
+INNER_SCRIPT
