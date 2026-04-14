@@ -5,30 +5,86 @@ echo "============================================"
 echo "  Termux + Claude Code + Happy Coder Setup"
 echo "============================================"
 echo ""
-echo "NOTE: Make sure the Termux:API app is installed"
-echo "  from F-Droid or Google Play. The termux-api"
-echo "  package alone is not enough — the companion"
-echo "  app is required for URL opening, clipboard,"
-echo "  and other Android integrations."
-echo ""
 
-# --- Step 1: Termux packages ---
-echo "[1/3] Installing Termux packages..."
+# --- Step 1: Set mirror and update ---
+echo "[1/6] Setting package mirror and updating..."
+mkdir -p "$PREFIX/etc/apt"
+echo "deb https://packages.termux.dev/apt/termux-main stable main" > "$PREFIX/etc/apt/sources.list"
 pkg update -y
-pkg install -y proot-distro termux-api
+pkg upgrade -y
 
-# --- Step 2: Install Ubuntu in proot ---
+# --- Step 2: Install core Termux packages ---
 echo ""
-echo "[2/3] Installing Ubuntu via proot-distro..."
+echo "[2/6] Installing core Termux packages..."
+pkg install -y proot-distro
+
+# --- Step 3: Optional Termux integrations ---
+echo ""
+echo "[3/6] Checking optional Termux integrations..."
+
+# Termux:API — clipboard, notifications, sensors, etc.
+if pm list packages 2>/dev/null | grep -q 'com.termux.api'; then
+  echo "  Termux:API app detected — installing termux-api package..."
+  pkg install -y termux-api
+else
+  echo "  Termux:API app not installed, skipping."
+  echo "    Install from F-Droid for clipboard, notifications, etc."
+fi
+
+# Termux:Boot — run scripts on device boot
+if pm list packages 2>/dev/null | grep -q 'com.termux.boot'; then
+  echo "  Termux:Boot app detected — setting up boot scripts..."
+  mkdir -p ~/.termux/boot
+  cat > ~/.termux/boot/start-happy-daemon.sh <<'BOOT'
+#!/data/data/com.termux/files/usr/bin/bash
+termux-wake-lock
+proot-distro login ubuntu -- /bin/bash -lc "happy daemon start &>/dev/null &"
+BOOT
+  chmod +x ~/.termux/boot/start-happy-daemon.sh
+  echo "    Created boot script to auto-start happy daemon."
+else
+  echo "  Termux:Boot app not installed, skipping."
+  echo "    Install from F-Droid to auto-start on device boot."
+fi
+
+# Termux:Widget — home screen shortcuts
+if pm list packages 2>/dev/null | grep -q 'com.termux.widget'; then
+  echo "  Termux:Widget app detected — creating shortcuts..."
+  mkdir -p ~/.shortcuts
+  cat > ~/.shortcuts/Claude.sh <<'WIDGET_CLAUDE'
+#!/data/data/com.termux/files/usr/bin/bash
+proot-distro login ubuntu -- /bin/bash -lc "happy"
+WIDGET_CLAUDE
+  chmod +x ~/.shortcuts/Claude.sh
+  echo "    Created 'Claude' home screen shortcut."
+else
+  echo "  Termux:Widget app not installed, skipping."
+  echo "    Install from F-Droid for home screen shortcuts."
+fi
+
+# --- Step 4: Storage access ---
+echo ""
+echo "[4/6] Setting up storage access..."
+if [ -d ~/storage/shared ]; then
+  echo "  Storage already configured, skipping."
+else
+  echo "  Granting storage access (tap Allow on the prompt)..."
+  termux-setup-storage
+  echo "  Storage configured at ~/storage/"
+fi
+
+# --- Step 5: Install Ubuntu in proot ---
+echo ""
+echo "[5/6] Installing Ubuntu via proot-distro..."
 if proot-distro list --installed 2>/dev/null | grep -q ubuntu; then
   echo "  Ubuntu already installed, skipping."
 else
   proot-distro install ubuntu
 fi
 
-# --- Step 3: Run inner setup inside proot ---
+# --- Step 6: Bootstrap inside proot ---
 echo ""
-echo "[3/3] Bootstrapping inside proot Ubuntu..."
+echo "[6/6] Bootstrapping inside proot Ubuntu..."
 
 proot-distro login ubuntu -- bash -c 'bash -s' <<'INNER_SCRIPT'
 set -e
@@ -80,7 +136,6 @@ fi
 echo ""
 echo "============================================"
 echo "[proot 3.5/5] Claude Code login required."
-echo "  Run: claude login"
 echo "  This will open a browser or give you a URL."
 echo "============================================"
 echo ""
