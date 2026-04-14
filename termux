@@ -5,6 +5,12 @@ echo "============================================"
 echo "  Termux + Claude Code + Happy Coder Setup"
 echo "============================================"
 echo ""
+echo "NOTE: Make sure the Termux:API app is installed"
+echo "  from F-Droid or Google Play. The termux-api"
+echo "  package alone is not enough — the companion"
+echo "  app is required for URL opening, clipboard,"
+echo "  and other Android integrations."
+echo ""
 
 # --- Step 1: Termux packages ---
 echo "[1/3] Installing Termux packages..."
