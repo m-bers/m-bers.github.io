@@ -7,9 +7,9 @@ echo "============================================"
 echo ""
 
 # --- Step 1: Termux packages ---
-echo "[1/3] Installing proot-distro..."
+echo "[1/3] Installing Termux packages..."
 pkg update -y
-pkg install -y proot-distro
+pkg install -y proot-distro termux-api
 
 # --- Step 2: Install Ubuntu in proot ---
 echo ""
@@ -30,6 +30,16 @@ set -e
 echo ""
 echo "=== Inside proot Ubuntu ==="
 echo ""
+
+# --- Ensure Termux commands are accessible ---
+TERMUX_BIN="/data/data/com.termux/files/usr/bin"
+if [ -d "$TERMUX_BIN" ] && ! echo "$PATH" | grep -q "$TERMUX_BIN"; then
+  export PATH="$PATH:$TERMUX_BIN"
+fi
+if [ -d "$TERMUX_BIN" ] && ! grep -q "$TERMUX_BIN" /etc/environment 2>/dev/null; then
+  sed -i "s|^PATH=\(.*\)|PATH=\1:$TERMUX_BIN|" /etc/environment
+  echo "Added Termux bin to /etc/environment PATH"
+fi
 
 # --- Install nvm ---
 echo "[proot 1/5] Installing nvm..."
