@@ -129,7 +129,7 @@ jobs:
           NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/29.0.14206865
         run: |
           node scripts/patch-android-project.mjs --if-present
-          npx tauri android build --target aarch64 --debug --apk
+          npx tauri android build --target aarch64 --debug --apk true
 
       - name: Find and copy APK
         run: |
