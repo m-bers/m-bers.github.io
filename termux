@@ -408,6 +408,18 @@ echo "============================================"
 
 INNER_SCRIPT
 
+# --- Auto-start Mobvibe from Termux ---
+if ! grep -q 'mobvibe' ~/.bashrc 2>/dev/null; then
+  cat >> ~/.bashrc <<'TERMUX_BASHRC'
+
+# Auto-start Mobvibe inside proot
+if command -v proot-distro &>/dev/null && ! curl -sk https://localhost:8443 &>/dev/null; then
+  proot-distro login ubuntu -- /bin/bash -c 'source ~/.nvm/nvm.sh 2>/dev/null; export BUN_INSTALL=$HOME/.bun; export PATH=$BUN_INSTALL/bin:$PATH; /opt/mobvibe/start.sh &>/dev/null &'
+fi
+TERMUX_BASHRC
+  echo "Added Mobvibe auto-start to Termux .bashrc"
+fi
+
 echo ""
 echo "============================================"
 echo "  All done!"
