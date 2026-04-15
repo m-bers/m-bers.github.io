@@ -39,7 +39,7 @@ jobs:
       - name: Build WebUI (browser)
         working-directory: mobvibe
         env:
-          VITE_GATEWAY_URL: ""
+          VITE_GATEWAY_URL: "__MOBVIBE_GATEWAY_URL__"
         run: pnpm --filter webui build
 
       - name: Build CLI

@@ -226,6 +226,9 @@ else
   echo "  Downloading WebUI..."
   curl -fsSL "$WEBUI_URL" | tar xz -C "$MOBVIBE_DIR/webui"
 
+  echo "  Configuring WebUI gateway URL..."
+  find "$MOBVIBE_DIR/webui" -name "*.js" -exec sed -i 's|__MOBVIBE_GATEWAY_URL__|https://localhost:8443|g' {} + 2>/dev/null
+
   echo "  Downloading CLI..."
   curl -fsSL "$CLI_URL" | tar xz -C "$MOBVIBE_DIR/cli"
 
