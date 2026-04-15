@@ -114,7 +114,7 @@ if [ -d "$TERMUX_BIN" ] && ! grep -q "$TERMUX_BIN" /etc/environment 2>/dev/null;
 fi
 
 # --- Install nvm ---
-echo "[proot 1/9] Installing nvm..."
+echo "[proot 1/8] Installing nvm..."
 if [ -d "$HOME/.nvm" ]; then
   echo "  nvm already installed, skipping."
 else
@@ -126,7 +126,7 @@ export NVM_DIR="$HOME/.nvm"
 
 # --- Install Node ---
 echo ""
-echo "[proot 2/9] Installing Node.js (latest LTS)..."
+echo "[proot 2/8] Installing Node.js (latest LTS)..."
 if command -v node &>/dev/null; then
   echo "  Node $(node --version) already installed, skipping."
 else
@@ -135,7 +135,7 @@ fi
 
 # --- Install Claude Code ---
 echo ""
-echo "[proot 3/9] Installing Claude Code..."
+echo "[proot 3/8] Installing Claude Code..."
 if command -v claude &>/dev/null; then
   echo "  Claude Code already installed, skipping."
 else
@@ -146,7 +146,7 @@ fi
 echo ""
 if [ -e /dev/tty ]; then
   echo "============================================"
-  echo "[proot 3.5/9] Claude Code login required."
+  echo "[proot 3.5/8] Claude Code login required."
   echo "  This will open a browser or give you a URL."
   echo "============================================"
   echo ""
@@ -154,14 +154,14 @@ if [ -e /dev/tty ]; then
   echo ""
   echo "Claude Code login complete!"
 else
-  echo "[proot 3.5/9] Skipping Claude Code login (no TTY)."
+  echo "[proot 3.5/8] Skipping Claude Code login (no TTY)."
   echo "  Run manually: proot-distro login ubuntu"
   echo "  Then: claude auth login"
 fi
 
 # --- Install PostgreSQL ---
 echo ""
-echo "[proot 4/9] Installing PostgreSQL..."
+echo "[proot 4/8] Installing PostgreSQL..."
 if command -v pg_isready &>/dev/null; then
   echo "  PostgreSQL already installed, skipping."
 else
@@ -186,7 +186,7 @@ fi
 
 # --- Install Bun + pnpm ---
 echo ""
-echo "[proot 5/9] Installing Bun and pnpm..."
+echo "[proot 5/8] Installing Bun and pnpm..."
 if command -v bun &>/dev/null; then
   echo "  Bun already installed."
 else
@@ -208,7 +208,7 @@ fi
 
 # --- Download and install Mobvibe ---
 echo ""
-echo "[proot 6/9] Installing Mobvibe..."
+echo "[proot 6/8] Installing Mobvibe..."
 MOBVIBE_DIR="/opt/mobvibe"
 if [ -d "$MOBVIBE_DIR/gateway/apps" ] && [ -d "$MOBVIBE_DIR/cli/apps" ] && [ -f "$MOBVIBE_DIR/webui/index.html" ]; then
   echo "  Mobvibe already installed, skipping download."
@@ -227,7 +227,7 @@ else
   curl -fsSL "$WEBUI_URL" | tar xz -C "$MOBVIBE_DIR/webui"
 
   echo "  Configuring WebUI gateway URL..."
-  find "$MOBVIBE_DIR/webui" -name "*.js" -exec sed -i 's|__MOBVIBE_GATEWAY_URL__|https://localhost:8443|g' {} + 2>/dev/null
+  find "$MOBVIBE_DIR/webui" -name "*.js" -exec sed -i 's|__MOBVIBE_GATEWAY_URL__|http://localhost:8080|g' {} + 2>/dev/null
 
   echo "  Downloading CLI..."
   curl -fsSL "$CLI_URL" | tar xz -C "$MOBVIBE_DIR/cli"
@@ -241,20 +241,6 @@ else
   pnpm install --frozen-lockfile 2>/dev/null || pnpm install
 fi
 
-# --- Generate self-signed cert ---
-echo ""
-echo "[proot 7/9] Setting up HTTPS..."
-if [ ! -f "$MOBVIBE_DIR/certs/cert.pem" ]; then
-  mkdir -p "$MOBVIBE_DIR/certs"
-  openssl req -x509 -newkey rsa:2048 \
-    -keyout "$MOBVIBE_DIR/certs/key.pem" \
-    -out "$MOBVIBE_DIR/certs/cert.pem" \
-    -days 365 -nodes \
-    -subj "/CN=localhost" \
-    -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" 2>/dev/null
-  echo "  Self-signed certificate generated."
-fi
-
 # --- Generate auth secret ---
 if [ ! -f "$MOBVIBE_DIR/.auth-secret" ]; then
   openssl rand -hex 32 > "$MOBVIBE_DIR/.auth-secret"
@@ -262,12 +248,11 @@ fi
 
 # --- Create HTTPS proxy ---
 cat > "$MOBVIBE_DIR/proxy.js" <<'PROXYJS'
-const https = require("https");
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const WEBUI = "/opt/mobvibe/webui";
-const PORT = 8443;
+const PORT = 8080;
 
 const MIME = {
   ".html":"text/html",".js":"application/javascript",".css":"text/css",
@@ -275,22 +260,7 @@ const MIME = {
   ".wasm":"application/wasm",".ico":"image/x-icon",".apk":"application/vnd.android.package-archive"
 };
 
-const sslOpts = {
-  key: fs.readFileSync("/opt/mobvibe/certs/key.pem"),
-  cert: fs.readFileSync("/opt/mobvibe/certs/cert.pem")
-};
-
-function handler(req, res) {
-  if (req.url.startsWith("/api/") || req.url.startsWith("/auth/") || req.url.startsWith("/socket.io")) {
-    const opts = {hostname:"127.0.0.1",port:3005,path:req.url,method:req.method,headers:{...req.headers,host:"localhost:3005"}};
-    const proxy = http.request(opts, (pRes) => {
-      res.writeHead(pRes.statusCode, pRes.headers);
-      pRes.pipe(res);
-    });
-    proxy.on("error", () => res.writeHead(502).end());
-    req.pipe(proxy);
-    return;
-  }
+function serveStatic(req, res) {
   let fp = path.join(WEBUI, req.url.split("?")[0]);
   if (fp.endsWith("/")) fp += "index.html";
   fs.stat(fp, (err, st) => {
@@ -301,7 +271,29 @@ function handler(req, res) {
   });
 }
 
-const server = https.createServer(sslOpts, handler);
+function shouldServeStatic(url) {
+  const p = url.split("?")[0];
+  if (p === "/") return true;
+  if (p.startsWith("/assets/")) return true;
+  const ext = path.extname(p);
+  return ext && MIME[ext];
+}
+
+function handler(req, res) {
+  if (shouldServeStatic(req.url)) {
+    serveStatic(req, res);
+  } else {
+    const opts = {hostname:"127.0.0.1",port:3005,path:req.url,method:req.method,headers:{...req.headers,host:"localhost:3005"}};
+    const proxy = http.request(opts, (pRes) => {
+      res.writeHead(pRes.statusCode, pRes.headers);
+      pRes.pipe(res);
+    });
+    proxy.on("error", () => serveStatic(req, res));
+    req.pipe(proxy);
+  }
+}
+
+const server = http.createServer(handler);
 
 server.on("upgrade", (req, socket, head) => {
   const opts = {hostname:"127.0.0.1",port:3005,path:req.url,method:"GET",headers:{...req.headers,host:"localhost:3005"}};
@@ -311,14 +303,22 @@ server.on("upgrade", (req, socket, head) => {
       Object.entries(pRes.headers).map(([k,v])=>k+": "+v).join("\r\n") +
       "\r\n\r\n");
     if (pHead.length) socket.write(pHead);
+    pSocket.on("error", () => socket.end());
+    socket.on("error", () => pSocket.end());
     pSocket.pipe(socket);
     socket.pipe(pSocket);
   });
   proxy.on("error", () => socket.end());
+  socket.on("error", () => {});
   proxy.end();
 });
 
-server.listen(PORT, "0.0.0.0", () => console.log("HTTPS proxy on https://localhost:"+PORT));
+process.on("uncaughtException", (err) => {
+  if (err.code === "ECONNRESET" || err.code === "EPIPE") return;
+  console.error("Uncaught:", err);
+});
+
+server.listen(PORT, "0.0.0.0", () => console.log("HTTP proxy on http://localhost:"+PORT));
 PROXYJS
 
 # --- Create startup script ---
@@ -329,22 +329,32 @@ export NVM_DIR="$HOME/.nvm"
 export BUN_INSTALL="$HOME/.bun"
 export PATH="$BUN_INSTALL/bin:$PATH"
 
+# Kill old processes
+for port in 3005 8080; do
+  PID=$(lsof -ti:$port 2>/dev/null)
+  [ -n "$PID" ] && kill $PID 2>/dev/null
+done
+sleep 1
+
+# Start PostgreSQL
 PG_VERSION=$(ls /usr/lib/postgresql/ 2>/dev/null | head -1)
 PG_DATA="/var/lib/postgresql/$PG_VERSION/main"
-
 su - postgres -c "/usr/lib/postgresql/$PG_VERSION/bin/pg_ctl -D $PG_DATA -l $PG_DATA/logfile start" 2>/dev/null || true
 sleep 2
 
+# Start gateway
+export NODE_ENV=development
 export DATABASE_URL="postgresql://postgres@localhost:5432/mobvibe"
 export BETTER_AUTH_SECRET="$(cat /opt/mobvibe/.auth-secret 2>/dev/null)"
 export SKIP_EMAIL_VERIFICATION=true
 export PORT=3005
-export GATEWAY_CORS_ORIGINS="https://localhost:8443"
+export GATEWAY_CORS_ORIGINS="http://localhost:8080"
 
 cd /opt/mobvibe/gateway/apps/gateway
 npx drizzle-kit migrate 2>/dev/null
 node dist/index.js &
 
+# Start HTTP proxy
 node /opt/mobvibe/proxy.js &
 
 # Start CLI daemon
@@ -352,20 +362,20 @@ cd /opt/mobvibe/cli
 MOBVIBE_GATEWAY_URL=http://localhost:3005 bun apps/mobvibe-cli/dist/index.js start &>/dev/null &
 
 echo "Mobvibe running:"
-echo "  WebUI:   https://localhost:8443"
+echo "  WebUI:   http://localhost:8080"
 echo "  Gateway: http://localhost:3005"
 STARTSH
 chmod +x "$MOBVIBE_DIR/start.sh"
 
 # --- Configure Mobvibe CLI ---
 echo ""
-echo "[proot 8/9] Configuring Mobvibe CLI..."
+echo "[proot 7/8] Configuring Mobvibe CLI..."
 mkdir -p ~/.mobvibe
 echo '{"enabledAgents":["claude-acp"]}' > ~/.mobvibe/.config.json
 
 # --- Start services, create user, login CLI ---
 echo ""
-echo "[proot 9/9] Starting Mobvibe and creating default user..."
+echo "[proot 8/8] Starting Mobvibe and creating default user..."
 "$MOBVIBE_DIR/start.sh" &>/dev/null &
 sleep 8
 
@@ -422,8 +432,7 @@ echo "============================================"
 echo "  Setup complete!"
 echo ""
 echo "  Open in browser:"
-echo "    https://localhost:8443/auto-login.html"
-echo "  (Accept the self-signed cert warning)"
+echo "    http://localhost:8080/auto-login.html"
 echo ""
 echo "  To restart services:"
 echo "    proot-distro login ubuntu"
@@ -437,7 +446,7 @@ if ! grep -q 'mobvibe' ~/.bashrc 2>/dev/null; then
   cat >> ~/.bashrc <<'TERMUX_BASHRC'
 
 # Auto-start Mobvibe inside proot
-if command -v proot-distro &>/dev/null && ! curl -sk https://localhost:8443 &>/dev/null; then
+if command -v proot-distro &>/dev/null && ! curl -sk http://localhost:8080 &>/dev/null; then
   proot-distro login ubuntu -- /bin/bash -c 'source ~/.nvm/nvm.sh 2>/dev/null; export BUN_INSTALL=$HOME/.bun; export PATH=$BUN_INSTALL/bin:$PATH; /opt/mobvibe/start.sh &>/dev/null &'
 fi
 TERMUX_BASHRC
@@ -448,6 +457,6 @@ echo ""
 echo "============================================"
 echo "  All done!"
 echo ""
-echo "  Open https://localhost:8443/auto-login.html"
+echo "  Open http://localhost:8080/auto-login.html"
 echo "  in your phone's browser."
 echo "============================================"
