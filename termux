@@ -69,7 +69,7 @@ if [ -d ~/storage/shared ]; then
   echo "  Storage already configured, skipping."
 else
   echo "  Granting storage access (tap Allow on the prompt)..."
-  termux-setup-storage
+  termux-setup-storage </dev/tty
   echo "  Storage configured at ~/storage/"
 fi
 
@@ -134,13 +134,13 @@ fi
 
 # --- Claude Code login (interactive) ---
 echo ""
-if [ -t 0 ]; then
+if [ -e /dev/tty ]; then
   echo "============================================"
   echo "[proot 3.5/5] Claude Code login required."
   echo "  This will open a browser or give you a URL."
   echo "============================================"
   echo ""
-  claude login
+  claude login </dev/tty
   echo ""
   echo "Claude Code login complete!"
 else
@@ -160,13 +160,13 @@ fi
 
 # --- Happy Coder login (interactive) ---
 echo ""
-if [ -t 0 ]; then
+if [ -e /dev/tty ]; then
   echo "============================================"
   echo "[proot 5/5] Happy Coder login required."
   echo "  This will authenticate via Claude Code."
   echo "============================================"
   echo ""
-  happy auth login
+  happy auth login </dev/tty
   echo ""
   echo "Happy Coder login complete!"
 else
