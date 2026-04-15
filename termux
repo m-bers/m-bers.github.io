@@ -301,7 +301,24 @@ function handler(req, res) {
   });
 }
 
-https.createServer(sslOpts, handler).listen(PORT, "0.0.0.0", () => console.log("HTTPS proxy on https://localhost:"+PORT));
+const server = https.createServer(sslOpts, handler);
+
+server.on("upgrade", (req, socket, head) => {
+  const opts = {hostname:"127.0.0.1",port:3005,path:req.url,method:"GET",headers:{...req.headers,host:"localhost:3005"}};
+  const proxy = http.request(opts);
+  proxy.on("upgrade", (pRes, pSocket, pHead) => {
+    socket.write("HTTP/1.1 101 Switching Protocols\r\n" +
+      Object.entries(pRes.headers).map(([k,v])=>k+": "+v).join("\r\n") +
+      "\r\n\r\n");
+    if (pHead.length) socket.write(pHead);
+    pSocket.pipe(socket);
+    socket.pipe(pSocket);
+  });
+  proxy.on("error", () => socket.end());
+  proxy.end();
+});
+
+server.listen(PORT, "0.0.0.0", () => console.log("HTTPS proxy on https://localhost:"+PORT));
 PROXYJS
 
 # --- Create startup script ---
@@ -329,6 +346,10 @@ npx drizzle-kit migrate 2>/dev/null
 node dist/index.js &
 
 node /opt/mobvibe/proxy.js &
+
+# Start CLI daemon
+cd /opt/mobvibe/cli
+MOBVIBE_GATEWAY_URL=http://localhost:3005 bun apps/mobvibe-cli/dist/index.js start &>/dev/null &
 
 echo "Mobvibe running:"
 echo "  WebUI:   https://localhost:8443"
