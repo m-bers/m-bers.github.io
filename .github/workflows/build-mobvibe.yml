@@ -54,6 +54,7 @@ jobs:
             apps/gateway/dist \
             apps/gateway/package.json \
             apps/gateway/drizzle \
+            apps/gateway/drizzle.config.ts \
             packages/shared/dist \
             packages/shared/package.json \
             pnpm-lock.yaml \

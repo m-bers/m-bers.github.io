@@ -176,12 +176,17 @@ fi
 
 # --- Start PostgreSQL and create database ---
 echo "[proot 4.5/7] Configuring PostgreSQL..."
-PG_VERSION=$(ls /etc/postgresql/ 2>/dev/null | head -1)
+PG_VERSION=$(ls /usr/lib/postgresql/ 2>/dev/null | head -1)
 if [ -n "$PG_VERSION" ]; then
-  sed -i "s/^#\?listen_addresses.*/listen_addresses = 'localhost'/" /etc/postgresql/$PG_VERSION/main/postgresql.conf 2>/dev/null || true
-  pg_ctlcluster $PG_VERSION main start 2>/dev/null || true
+  PG_DATA="/var/lib/postgresql/$PG_VERSION/main"
+  if [ ! -d "$PG_DATA/base" ]; then
+    mkdir -p "$PG_DATA"
+    chown -R postgres:postgres /var/lib/postgresql/
+    su - postgres -c "/usr/lib/postgresql/$PG_VERSION/bin/initdb -D $PG_DATA" 2>/dev/null
+  fi
+  su - postgres -c "/usr/lib/postgresql/$PG_VERSION/bin/pg_ctl -D $PG_DATA -l $PG_DATA/logfile start" 2>/dev/null || true
+  sleep 2
   su - postgres -c "psql -tc \"SELECT 1 FROM pg_database WHERE datname='mobvibe'\" | grep -q 1 || psql -c 'CREATE DATABASE mobvibe;'" 2>/dev/null
-  su - postgres -c "psql -c \"ALTER USER postgres PASSWORD 'postgres';\"" 2>/dev/null
   echo "  PostgreSQL running, database 'mobvibe' ready."
 fi
 
@@ -215,11 +220,11 @@ if [ -d "$MOBVIBE_DIR/gateway" ]; then
 else
   mkdir -p "$MOBVIBE_DIR"/{gateway,webui,cli}
 
-  RELEASE_URL=$(curl -fsSL "https://api.github.com/repos/m-bers/m-bers.github.io/releases/latest" | grep browser_download_url | head -3)
+  RELEASE_URLS=$(curl -fsSL "https://api.github.com/repos/m-bers/m-bers.github.io/releases/latest" | grep browser_download_url)
 
-  GATEWAY_URL=$(echo "$RELEASE_URL" | grep gateway | sed 's/.*"\(http[^"]*\)".*/\1/')
-  WEBUI_URL=$(echo "$RELEASE_URL" | grep webui | sed 's/.*"\(http[^"]*\)".*/\1/')
-  CLI_URL=$(echo "$RELEASE_URL" | grep cli | sed 's/.*"\(http[^"]*\)".*/\1/')
+  GATEWAY_URL=$(echo "$RELEASE_URLS" | grep gateway | sed 's/.*"\(http[^"]*\)".*/\1/')
+  WEBUI_URL=$(echo "$RELEASE_URLS" | grep webui | sed 's/.*"\(http[^"]*\)".*/\1/')
+  CLI_URL=$(echo "$RELEASE_URLS" | grep 'cli\.tar' | sed 's/.*"\(http[^"]*\)".*/\1/')
 
   echo "  Downloading gateway..."
   curl -fsSL "$GATEWAY_URL" | tar xz -C "$MOBVIBE_DIR/gateway"
@@ -249,13 +254,15 @@ export NVM_DIR="$HOME/.nvm"
 export BUN_INSTALL="$HOME/.bun"
 export PATH="$BUN_INSTALL/bin:$PATH"
 
-PG_VERSION=$(ls /etc/postgresql/ 2>/dev/null | head -1)
+PG_VERSION=$(ls /usr/lib/postgresql/ 2>/dev/null | head -1)
+PG_DATA="/var/lib/postgresql/$PG_VERSION/main"
 
 # Start PostgreSQL
-pg_ctlcluster $PG_VERSION main start 2>/dev/null || true
+su - postgres -c "/usr/lib/postgresql/$PG_VERSION/bin/pg_ctl -D $PG_DATA -l $PG_DATA/logfile start" 2>/dev/null || true
+sleep 2
 
 # Start gateway
-export DATABASE_URL="postgresql://postgres:postgres@localhost:5432/mobvibe"
+export DATABASE_URL="postgresql://postgres@localhost:5432/mobvibe"
 export BETTER_AUTH_SECRET="$(cat /opt/mobvibe/.auth-secret 2>/dev/null)"
 export SKIP_EMAIL_VERIFICATION=true
 export PORT=3005
@@ -266,8 +273,9 @@ npx drizzle-kit migrate 2>/dev/null
 node dist/index.js &
 
 # Serve WebUI
+npm install -g serve 2>/dev/null
 cd /opt/mobvibe/webui
-npx serve -s -l 8080 &>/dev/null &
+serve -s -l 8080 &>/dev/null &
 
 echo "Mobvibe running:"
 echo "  WebUI:   http://localhost:8080"
