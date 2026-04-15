@@ -38,7 +38,7 @@ if pm list packages 2>/dev/null | grep -q 'com.termux.boot'; then
   cat > ~/.termux/boot/start-happy-daemon.sh <<'BOOT'
 #!/data/data/com.termux/files/usr/bin/bash
 termux-wake-lock
-proot-distro login ubuntu -- /bin/bash -lc "happy daemon start &>/dev/null &"
+proot-distro login ubuntu -- /bin/bash -c "source ~/.nvm/nvm.sh && happy daemon start &>/dev/null &"
 BOOT
   chmod +x ~/.termux/boot/start-happy-daemon.sh
   echo "    Created boot script to auto-start happy daemon."
@@ -134,14 +134,20 @@ fi
 
 # --- Claude Code login (interactive) ---
 echo ""
-echo "============================================"
-echo "[proot 3.5/5] Claude Code login required."
-echo "  This will open a browser or give you a URL."
-echo "============================================"
-echo ""
-claude login
-echo ""
-echo "Claude Code login complete!"
+if [ -t 0 ]; then
+  echo "============================================"
+  echo "[proot 3.5/5] Claude Code login required."
+  echo "  This will open a browser or give you a URL."
+  echo "============================================"
+  echo ""
+  claude login
+  echo ""
+  echo "Claude Code login complete!"
+else
+  echo "[proot 3.5/5] Skipping Claude Code login (no TTY)."
+  echo "  Run manually: proot-distro login ubuntu"
+  echo "  Then: claude login"
+fi
 
 # --- Install Happy Coder ---
 echo ""
@@ -154,14 +160,19 @@ fi
 
 # --- Happy Coder login (interactive) ---
 echo ""
-echo "============================================"
-echo "[proot 5/5] Happy Coder login required."
-echo "  This will authenticate via Claude Code."
-echo "============================================"
-echo ""
-happy auth login
-echo ""
-echo "Happy Coder login complete!"
+if [ -t 0 ]; then
+  echo "============================================"
+  echo "[proot 5/5] Happy Coder login required."
+  echo "  This will authenticate via Claude Code."
+  echo "============================================"
+  echo ""
+  happy auth login
+  echo ""
+  echo "Happy Coder login complete!"
+else
+  echo "[proot 5/5] Skipping Happy Coder login (no TTY)."
+  echo "  Run manually: happy auth login"
+fi
 
 # --- Add happy daemon auto-start to .bashrc ---
 if ! grep -q 'happy daemon' ~/.bashrc 2>/dev/null; then
