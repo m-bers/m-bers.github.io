@@ -152,13 +152,13 @@ if [ -e /dev/tty ]; then
   echo "  This will open a browser or give you a URL."
   echo "============================================"
   echo ""
-  claude login </dev/tty
+  claude auth login </dev/tty
   echo ""
   echo "Claude Code login complete!"
 else
   echo "[proot 3.5/5] Skipping Claude Code login (no TTY)."
   echo "  Run manually: proot-distro login ubuntu"
-  echo "  Then: claude login"
+  echo "  Then: claude auth login"
 fi
 
 # --- Install Happy Coder ---
