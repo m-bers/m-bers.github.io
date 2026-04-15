@@ -174,17 +174,23 @@ else
   echo "  Run manually: happy auth login"
 fi
 
-# --- Add happy daemon auto-start to .bashrc ---
-if ! grep -q 'happy daemon' ~/.bashrc 2>/dev/null; then
-  echo "" >> ~/.bashrc
-  cat >> ~/.bashrc <<'BASHRC'
+# --- Add happy daemon auto-start to .profile ---
+# .bashrc has an early `[ -z "$PS1" ] && return` that skips everything
+# below it in non-interactive shells. Use .profile instead, which runs
+# for login shells and sources .bashrc (which loads nvm) when interactive.
+if ! grep -q 'happy daemon' ~/.profile 2>/dev/null; then
+  cat >> ~/.profile <<'PROFILE'
+
+# Load nvm for non-interactive contexts
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
 
 # Auto-start Happy Coder daemon
 if command -v happy &>/dev/null && ! happy daemon status 2>/dev/null | grep -q "Daemon is running"; then
   happy daemon start &>/dev/null &
 fi
-BASHRC
-  echo "Added happy daemon auto-start to .bashrc"
+PROFILE
+  echo "Added happy daemon auto-start to .profile"
 fi
 
 echo ""
