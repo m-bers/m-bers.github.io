@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
+  build-server:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -36,7 +36,7 @@ jobs:
         working-directory: mobvibe
         run: pnpm --filter gateway build
 
-      - name: Build WebUI
+      - name: Build WebUI (browser)
         working-directory: mobvibe
         env:
           VITE_GATEWAY_URL: ""
@@ -76,13 +76,136 @@ jobs:
             pnpm-workspace.yaml \
             package.json
 
-      - name: Create release
-        uses: softprops/action-gh-release@v2
+      - uses: actions/upload-artifact@v4
+        with:
+          name: server-artifacts
+          path: /tmp/artifacts/
+
+  build-android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install pnpm
+        run: corepack enable && corepack prepare pnpm@latest --activate
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK
+        run: sdkmanager "ndk;29.0.14206865"
+
+      - name: Install dependencies
+        working-directory: mobvibe
+        run: pnpm install --frozen-lockfile
+
+      - name: Build shared
+        working-directory: mobvibe
+        run: pnpm --filter @mobvibe/shared build
+
+      - name: Build Android APK (debug)
+        working-directory: mobvibe/apps/webui
+        env:
+          VITE_GATEWAY_URL: ""
+          NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/29.0.14206865
+        run: |
+          node scripts/patch-android-project.mjs --if-present
+          npx tauri android build --target aarch64 --debug --apk
+
+      - name: Find and copy APK
+        run: |
+          mkdir -p /tmp/artifacts
+          find mobvibe/apps/webui/src-tauri/gen/android -name "*.apk" -path "*/debug/*" -exec cp {} /tmp/artifacts/mobvibe-debug.apk \;
+          ls -la /tmp/artifacts/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-artifact
+          path: /tmp/artifacts/mobvibe-debug.apk
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install pnpm
+        run: corepack enable && corepack prepare pnpm@latest --activate
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        working-directory: mobvibe
+        run: pnpm install --frozen-lockfile
+
+      - name: Build shared
+        working-directory: mobvibe
+        run: pnpm --filter @mobvibe/shared build
+
+      - name: Build macOS app
+        working-directory: mobvibe/apps/webui
+        env:
+          VITE_GATEWAY_URL: ""
+        run: npx tauri build --debug
+
+      - name: Find and copy artifacts
+        run: |
+          mkdir -p /tmp/artifacts
+          find mobvibe/apps/webui/src-tauri/target -name "*.dmg" -exec cp {} /tmp/artifacts/mobvibe-debug.dmg \; 2>/dev/null || true
+          find mobvibe/apps/webui/src-tauri/target -name "*.app" -path "*/debug/*" -exec sh -c 'cd "$(dirname "{}")" && zip -r /tmp/artifacts/mobvibe-debug-app.zip "$(basename "{}")"' \; 2>/dev/null || true
+          ls -la /tmp/artifacts/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-artifact
+          path: /tmp/artifacts/
+
+  release:
+    needs: [build-server, build-android, build-macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List artifacts
+        run: find artifacts -type f -ls
+
+      - uses: softprops/action-gh-release@v2
         with:
           tag_name: mobvibe-${{ github.sha }}
-          name: Mobvibe Build ${{ github.sha }}
+          name: Mobvibe Build
           files: |
-            /tmp/artifacts/gateway.tar.gz
-            /tmp/artifacts/webui.tar.gz
-            /tmp/artifacts/cli.tar.gz
+            artifacts/server-artifacts/gateway.tar.gz
+            artifacts/server-artifacts/webui.tar.gz
+            artifacts/server-artifacts/cli.tar.gz
+            artifacts/android-artifact/mobvibe-debug.apk
+            artifacts/macos-artifact/*
           make_latest: true
