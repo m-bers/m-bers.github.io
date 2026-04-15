@@ -1,13 +1,16 @@
 #!/data/data/com.termux/files/usr/bin/bash
 set -e
 
+GITHUB_USER="m-bers"
+GITHUB_REPO="m-bers/m-bers.github.io"
+
 echo "============================================"
-echo "  Termux + Claude Code + Happy Coder Setup"
+echo "  Termux + Claude Code + Mobvibe Setup"
 echo "============================================"
 echo ""
 
 # --- Step 1: Set mirror and update ---
-echo "[1/7] Setting package mirror and updating..."
+echo "[1/8] Setting package mirror and updating..."
 mkdir -p "$PREFIX/etc/apt"
 echo "deb https://packages.termux.dev/apt/termux-main stable main" > "$PREFIX/etc/apt/sources.list"
 pkg update -y
@@ -15,15 +18,14 @@ DEBIAN_FRONTEND=noninteractive pkg upgrade -y -o Dpkg::Options::="--force-confol
 
 # --- Step 2: Install core Termux packages ---
 echo ""
-echo "[2/7] Installing core Termux packages..."
+echo "[2/8] Installing core Termux packages..."
 pkg install -y proot-distro openssh
 
 # --- Step 3: SSH setup with GitHub keys ---
 echo ""
-echo "[3/7] Setting up SSH with GitHub keys..."
+echo "[3/8] Setting up SSH with GitHub keys..."
 mkdir -p ~/.ssh
 chmod 700 ~/.ssh
-GITHUB_USER="m-bers"
 echo "  Pulling SSH keys from github.com/$GITHUB_USER..."
 curl -fsSL "https://github.com/$GITHUB_USER.keys" > ~/.ssh/authorized_keys
 chmod 600 ~/.ssh/authorized_keys
@@ -33,7 +35,7 @@ sshd
 
 # --- Step 4: Optional Termux integrations ---
 echo ""
-echo "[4/7] Checking optional Termux integrations..."
+echo "[4/8] Checking optional Termux integrations..."
 
 # Termux:API — clipboard, notifications, sensors, etc.
 if pm list packages 2>/dev/null | grep -q 'com.termux.api'; then
@@ -48,13 +50,13 @@ fi
 if pm list packages 2>/dev/null | grep -q 'com.termux.boot'; then
   echo "  Termux:Boot app detected — setting up boot scripts..."
   mkdir -p ~/.termux/boot
-  cat > ~/.termux/boot/start-happy-daemon.sh <<'BOOT'
+  cat > ~/.termux/boot/start-mobvibe.sh <<'BOOT'
 #!/data/data/com.termux/files/usr/bin/bash
 termux-wake-lock
-proot-distro login ubuntu -- /bin/bash -c "source ~/.nvm/nvm.sh && happy daemon start &>/dev/null &"
+proot-distro login ubuntu -- /bin/bash -c "source ~/.nvm/nvm.sh && /opt/mobvibe/start.sh &>/dev/null &"
 BOOT
-  chmod +x ~/.termux/boot/start-happy-daemon.sh
-  echo "    Created boot script to auto-start happy daemon."
+  chmod +x ~/.termux/boot/start-mobvibe.sh
+  echo "    Created boot script to auto-start Mobvibe."
 else
   echo "  Termux:Boot app not installed, skipping."
   echo "    Install from F-Droid to auto-start on device boot."
@@ -66,7 +68,7 @@ if pm list packages 2>/dev/null | grep -q 'com.termux.widget'; then
   mkdir -p ~/.shortcuts
   cat > ~/.shortcuts/Claude.sh <<'WIDGET_CLAUDE'
 #!/data/data/com.termux/files/usr/bin/bash
-proot-distro login ubuntu -- /bin/bash -lc "happy"
+proot-distro login ubuntu -- /bin/bash -lc "claude"
 WIDGET_CLAUDE
   chmod +x ~/.shortcuts/Claude.sh
   echo "    Created 'Claude' home screen shortcut."
@@ -75,9 +77,9 @@ else
   echo "    Install from F-Droid for home screen shortcuts."
 fi
 
-# --- Step 4: Storage access ---
+# --- Step 5: Storage access ---
 echo ""
-echo "[5/7] Setting up storage access..."
+echo "[5/8] Setting up storage access..."
 if [ -d ~/storage/shared ]; then
   echo "  Storage already configured, skipping."
 else
@@ -86,30 +88,18 @@ else
   echo "  Storage configured at ~/storage/"
 fi
 
-# --- Add happy daemon auto-start to Termux's .bashrc ---
-if ! grep -q 'happy daemon' ~/.bashrc 2>/dev/null; then
-  cat >> ~/.bashrc <<'TERMUX_BASHRC'
-
-# Auto-start Happy Coder daemon inside proot
-if command -v proot-distro &>/dev/null; then
-  proot-distro login ubuntu -- /bin/bash -c 'source ~/.nvm/nvm.sh 2>/dev/null; if command -v happy &>/dev/null && ! happy daemon status 2>/dev/null | grep -q "Daemon is running"; then happy daemon start &>/dev/null & fi'
-fi
-TERMUX_BASHRC
-  echo "Added happy daemon auto-start to Termux .bashrc"
-fi
-
-# --- Step 5: Install Ubuntu in proot ---
+# --- Step 6: Install Ubuntu in proot ---
 echo ""
-echo "[6/7] Installing Ubuntu via proot-distro..."
+echo "[6/8] Installing Ubuntu via proot-distro..."
 if proot-distro list --installed 2>/dev/null | grep -q ubuntu; then
   echo "  Ubuntu already installed, skipping."
 else
   proot-distro install ubuntu
 fi
 
-# --- Step 6: Bootstrap inside proot ---
+# --- Step 7: Bootstrap inside proot ---
 echo ""
-echo "[7/7] Bootstrapping inside proot Ubuntu..."
+echo "[7/8] Bootstrapping inside proot Ubuntu..."
 
 proot-distro login ubuntu -- bash -c 'bash -s' <<'INNER_SCRIPT'
 set -e
@@ -129,7 +119,7 @@ if [ -d "$TERMUX_BIN" ] && ! grep -q "$TERMUX_BIN" /etc/environment 2>/dev/null;
 fi
 
 # --- Install nvm ---
-echo "[proot 1/5] Installing nvm..."
+echo "[proot 1/7] Installing nvm..."
 if [ -d "$HOME/.nvm" ]; then
   echo "  nvm already installed, skipping."
 else
@@ -141,7 +131,7 @@ export NVM_DIR="$HOME/.nvm"
 
 # --- Install Node ---
 echo ""
-echo "[proot 2/5] Installing Node.js (latest LTS)..."
+echo "[proot 2/7] Installing Node.js (latest LTS)..."
 if command -v node &>/dev/null; then
   echo "  Node $(node --version) already installed, skipping."
 else
@@ -150,7 +140,7 @@ fi
 
 # --- Install Claude Code ---
 echo ""
-echo "[proot 3/5] Installing Claude Code..."
+echo "[proot 3/7] Installing Claude Code..."
 if command -v claude &>/dev/null; then
   echo "  Claude Code already installed, skipping."
 else
@@ -161,7 +151,7 @@ fi
 echo ""
 if [ -e /dev/tty ]; then
   echo "============================================"
-  echo "[proot 3.5/5] Claude Code login required."
+  echo "[proot 3.5/7] Claude Code login required."
   echo "  This will open a browser or give you a URL."
   echo "============================================"
   echo ""
@@ -169,34 +159,149 @@ if [ -e /dev/tty ]; then
   echo ""
   echo "Claude Code login complete!"
 else
-  echo "[proot 3.5/5] Skipping Claude Code login (no TTY)."
+  echo "[proot 3.5/7] Skipping Claude Code login (no TTY)."
   echo "  Run manually: proot-distro login ubuntu"
   echo "  Then: claude auth login"
 fi
 
-# --- Install Happy Coder ---
+# --- Install PostgreSQL ---
 echo ""
-echo "[proot 4/5] Installing Happy Coder..."
-if command -v happy &>/dev/null; then
-  echo "  Happy Coder already installed, skipping."
+echo "[proot 4/7] Installing PostgreSQL..."
+if command -v pg_isready &>/dev/null; then
+  echo "  PostgreSQL already installed, skipping."
 else
-  npm install -g happy
+  apt-get update -qq
+  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq postgresql postgresql-client >/dev/null
 fi
 
-# --- Happy Coder login (interactive) ---
+# --- Start PostgreSQL and create database ---
+echo "[proot 4.5/7] Configuring PostgreSQL..."
+PG_VERSION=$(ls /etc/postgresql/ 2>/dev/null | head -1)
+if [ -n "$PG_VERSION" ]; then
+  sed -i "s/^#\?listen_addresses.*/listen_addresses = 'localhost'/" /etc/postgresql/$PG_VERSION/main/postgresql.conf 2>/dev/null || true
+  pg_ctlcluster $PG_VERSION main start 2>/dev/null || true
+  su - postgres -c "psql -tc \"SELECT 1 FROM pg_database WHERE datname='mobvibe'\" | grep -q 1 || psql -c 'CREATE DATABASE mobvibe;'" 2>/dev/null
+  su - postgres -c "psql -c \"ALTER USER postgres PASSWORD 'postgres';\"" 2>/dev/null
+  echo "  PostgreSQL running, database 'mobvibe' ready."
+fi
+
+# --- Install Bun ---
 echo ""
+echo "[proot 5/7] Installing Bun..."
+if command -v bun &>/dev/null; then
+  echo "  Bun already installed, skipping."
+else
+  curl -fsSL https://bun.sh/install | bash
+  export BUN_INSTALL="$HOME/.bun"
+  export PATH="$BUN_INSTALL/bin:$PATH"
+fi
+export BUN_INSTALL="$HOME/.bun"
+export PATH="$BUN_INSTALL/bin:$PATH"
+
+# --- Install pnpm ---
+echo "[proot 5.5/7] Installing pnpm..."
+if command -v pnpm &>/dev/null; then
+  echo "  pnpm already installed, skipping."
+else
+  npm install -g pnpm
+fi
+
+# --- Download and install Mobvibe ---
+echo ""
+echo "[proot 6/7] Installing Mobvibe..."
+MOBVIBE_DIR="/opt/mobvibe"
+if [ -d "$MOBVIBE_DIR/gateway" ]; then
+  echo "  Mobvibe already installed, skipping download."
+else
+  mkdir -p "$MOBVIBE_DIR"/{gateway,webui,cli}
+
+  RELEASE_URL=$(curl -fsSL "https://api.github.com/repos/m-bers/m-bers.github.io/releases/latest" | grep browser_download_url | head -3)
+
+  GATEWAY_URL=$(echo "$RELEASE_URL" | grep gateway | sed 's/.*"\(http[^"]*\)".*/\1/')
+  WEBUI_URL=$(echo "$RELEASE_URL" | grep webui | sed 's/.*"\(http[^"]*\)".*/\1/')
+  CLI_URL=$(echo "$RELEASE_URL" | grep cli | sed 's/.*"\(http[^"]*\)".*/\1/')
+
+  echo "  Downloading gateway..."
+  curl -fsSL "$GATEWAY_URL" | tar xz -C "$MOBVIBE_DIR/gateway"
+
+  echo "  Downloading WebUI..."
+  curl -fsSL "$WEBUI_URL" | tar xz -C "$MOBVIBE_DIR/webui"
+
+  echo "  Downloading CLI..."
+  curl -fsSL "$CLI_URL" | tar xz -C "$MOBVIBE_DIR/cli"
+
+  # Install gateway dependencies
+  echo "  Installing gateway dependencies..."
+  cd "$MOBVIBE_DIR/gateway"
+  pnpm install --frozen-lockfile 2>/dev/null || pnpm install
+
+  # Install CLI dependencies
+  echo "  Installing CLI dependencies..."
+  cd "$MOBVIBE_DIR/cli"
+  pnpm install --frozen-lockfile 2>/dev/null || pnpm install
+fi
+
+# --- Create Mobvibe startup script ---
+cat > "$MOBVIBE_DIR/start.sh" <<'MOBVIBE_START'
+#!/bin/bash
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+export BUN_INSTALL="$HOME/.bun"
+export PATH="$BUN_INSTALL/bin:$PATH"
+
+PG_VERSION=$(ls /etc/postgresql/ 2>/dev/null | head -1)
+
+# Start PostgreSQL
+pg_ctlcluster $PG_VERSION main start 2>/dev/null || true
+
+# Start gateway
+export DATABASE_URL="postgresql://postgres:postgres@localhost:5432/mobvibe"
+export BETTER_AUTH_SECRET="$(cat /opt/mobvibe/.auth-secret 2>/dev/null)"
+export SKIP_EMAIL_VERIFICATION=true
+export PORT=3005
+export GATEWAY_CORS_ORIGINS="http://localhost:8080"
+
+cd /opt/mobvibe/gateway/apps/gateway
+npx drizzle-kit migrate 2>/dev/null
+node dist/index.js &
+
+# Serve WebUI
+cd /opt/mobvibe/webui
+npx serve -s -l 8080 &>/dev/null &
+
+echo "Mobvibe running:"
+echo "  WebUI:   http://localhost:8080"
+echo "  Gateway: http://localhost:3005"
+MOBVIBE_START
+chmod +x "$MOBVIBE_DIR/start.sh"
+
+# Generate auth secret if not exists
+if [ ! -f "$MOBVIBE_DIR/.auth-secret" ]; then
+  openssl rand -hex 32 > "$MOBVIBE_DIR/.auth-secret"
+fi
+
+# --- Mobvibe login (interactive) ---
+echo ""
+echo "[proot 7/7] Setting up Mobvibe CLI..."
+export MOBVIBE_GATEWAY_URL="http://localhost:3005"
+
+# Start services for initial login
+"$MOBVIBE_DIR/start.sh" &>/dev/null &
+sleep 3
+
 if [ -e /dev/tty ]; then
   echo "============================================"
-  echo "[proot 5/5] Happy Coder login required."
-  echo "  This will authenticate via Claude Code."
+  echo "  Mobvibe CLI login required."
   echo "============================================"
   echo ""
-  happy auth login </dev/tty
+  cd "$MOBVIBE_DIR/cli"
+  MOBVIBE_GATEWAY_URL="http://localhost:3005" bun apps/mobvibe-cli/dist/index.js login </dev/tty
   echo ""
-  echo "Happy Coder login complete!"
+  echo "Mobvibe login complete!"
 else
-  echo "[proot 5/5] Skipping Happy Coder login (no TTY)."
-  echo "  Run manually: happy auth login"
+  echo "  Skipping Mobvibe login (no TTY)."
+  echo "  Run manually: /opt/mobvibe/start.sh"
+  echo "  Then: cd /opt/mobvibe/cli && MOBVIBE_GATEWAY_URL=http://localhost:3005 bun apps/mobvibe-cli/dist/index.js login"
 fi
 
 echo ""
@@ -204,7 +309,30 @@ echo "============================================"
 echo "  Setup complete!"
 echo ""
 echo "  To start: proot-distro login ubuntu"
-echo "  Then run:  happy"
+echo "  Then run: /opt/mobvibe/start.sh"
+echo ""
+echo "  WebUI:   http://localhost:8080"
+echo "  Gateway: http://localhost:3005"
 echo "============================================"
 
 INNER_SCRIPT
+
+# --- Step 8: Auto-start Mobvibe from Termux ---
+echo ""
+echo "[8/8] Configuring auto-start..."
+if ! grep -q 'mobvibe' ~/.bashrc 2>/dev/null; then
+  cat >> ~/.bashrc <<'TERMUX_BASHRC'
+
+# Auto-start Mobvibe inside proot
+if command -v proot-distro &>/dev/null; then
+  proot-distro login ubuntu -- /bin/bash -c 'source ~/.nvm/nvm.sh 2>/dev/null; /opt/mobvibe/start.sh &>/dev/null &'
+fi
+TERMUX_BASHRC
+  echo "Added Mobvibe auto-start to Termux .bashrc"
+fi
+
+echo ""
+echo "============================================"
+echo "  All done! Open http://localhost:8080"
+echo "  in your phone's browser to use Mobvibe."
+echo "============================================"

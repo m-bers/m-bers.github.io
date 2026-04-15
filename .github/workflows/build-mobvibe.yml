@@ -1,0 +1,88 @@
+name: Build Mobvibe
+
+on:
+  push:
+    paths:
+      - '.gitmodules'
+      - '.github/workflows/build-mobvibe.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install pnpm
+        run: corepack enable && corepack prepare pnpm@latest --activate
+
+      - name: Install dependencies
+        working-directory: mobvibe
+        run: pnpm install --frozen-lockfile
+
+      - name: Build shared
+        working-directory: mobvibe
+        run: pnpm --filter @mobvibe/shared build
+
+      - name: Build gateway
+        working-directory: mobvibe
+        run: pnpm --filter gateway build
+
+      - name: Build WebUI
+        working-directory: mobvibe
+        env:
+          VITE_GATEWAY_URL: ""
+        run: pnpm --filter webui build
+
+      - name: Build CLI
+        working-directory: mobvibe
+        run: pnpm --filter @mobvibe/cli build
+
+      - name: Package gateway
+        working-directory: mobvibe
+        run: |
+          mkdir -p /tmp/artifacts
+          tar czf /tmp/artifacts/gateway.tar.gz \
+            apps/gateway/dist \
+            apps/gateway/package.json \
+            apps/gateway/drizzle \
+            packages/shared/dist \
+            packages/shared/package.json \
+            pnpm-lock.yaml \
+            pnpm-workspace.yaml \
+            package.json
+
+      - name: Package WebUI
+        working-directory: mobvibe
+        run: tar czf /tmp/artifacts/webui.tar.gz -C apps/webui/dist .
+
+      - name: Package CLI
+        working-directory: mobvibe
+        run: |
+          tar czf /tmp/artifacts/cli.tar.gz \
+            apps/mobvibe-cli/dist \
+            apps/mobvibe-cli/package.json \
+            packages/shared/dist \
+            packages/shared/package.json \
+            pnpm-lock.yaml \
+            pnpm-workspace.yaml \
+            package.json
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: mobvibe-${{ github.sha }}
+          name: Mobvibe Build ${{ github.sha }}
+          files: |
+            /tmp/artifacts/gateway.tar.gz
+            /tmp/artifacts/webui.tar.gz
+            /tmp/artifacts/cli.tar.gz
+          make_latest: true

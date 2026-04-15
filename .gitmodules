@@ -1,0 +1,3 @@
+[submodule "mobvibe"]
+	path = mobvibe
+	url = https://github.com/Eric-Song-Nop/mobvibe.git
