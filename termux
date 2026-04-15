@@ -3,6 +3,8 @@ set -e
 
 GITHUB_USER="m-bers"
 GITHUB_REPO="m-bers/m-bers.github.io"
+MOBVIBE_EMAIL="admin@mobvibe.local"
+MOBVIBE_PASS="admin123"
 
 echo "============================================"
 echo "  Termux + Claude Code + Mobvibe Setup"
@@ -10,7 +12,7 @@ echo "============================================"
 echo ""
 
 # --- Step 1: Set mirror and update ---
-echo "[1/8] Setting package mirror and updating..."
+echo "[1/7] Setting package mirror and updating..."
 mkdir -p "$PREFIX/etc/apt"
 echo "deb https://packages.termux.dev/apt/termux-main stable main" > "$PREFIX/etc/apt/sources.list"
 pkg update -y
@@ -18,12 +20,12 @@ DEBIAN_FRONTEND=noninteractive pkg upgrade -y -o Dpkg::Options::="--force-confol
 
 # --- Step 2: Install core Termux packages ---
 echo ""
-echo "[2/8] Installing core Termux packages..."
+echo "[2/7] Installing core Termux packages..."
 pkg install -y proot-distro openssh
 
 # --- Step 3: SSH setup with GitHub keys ---
 echo ""
-echo "[3/8] Setting up SSH with GitHub keys..."
+echo "[3/7] Setting up SSH with GitHub keys..."
 mkdir -p ~/.ssh
 chmod 700 ~/.ssh
 echo "  Pulling SSH keys from github.com/$GITHUB_USER..."
@@ -31,22 +33,19 @@ curl -fsSL "https://github.com/$GITHUB_USER.keys" > ~/.ssh/authorized_keys
 chmod 600 ~/.ssh/authorized_keys
 NKEYS=$(wc -l < ~/.ssh/authorized_keys)
 echo "  Imported $NKEYS key(s). Starting sshd on port 8022..."
-sshd
+sshd 2>/dev/null || true
 
 # --- Step 4: Optional Termux integrations ---
 echo ""
-echo "[4/8] Checking optional Termux integrations..."
+echo "[4/7] Checking optional Termux integrations..."
 
-# Termux:API — clipboard, notifications, sensors, etc.
 if pm list packages 2>/dev/null | grep -q 'com.termux.api'; then
   echo "  Termux:API app detected — installing termux-api package..."
   pkg install -y termux-api
 else
   echo "  Termux:API app not installed, skipping."
-  echo "    Install from F-Droid for clipboard, notifications, etc."
 fi
 
-# Termux:Boot — run scripts on device boot
 if pm list packages 2>/dev/null | grep -q 'com.termux.boot'; then
   echo "  Termux:Boot app detected — setting up boot scripts..."
   mkdir -p ~/.termux/boot
@@ -59,10 +58,8 @@ BOOT
   echo "    Created boot script to auto-start Mobvibe."
 else
   echo "  Termux:Boot app not installed, skipping."
-  echo "    Install from F-Droid to auto-start on device boot."
 fi
 
-# Termux:Widget — home screen shortcuts
 if pm list packages 2>/dev/null | grep -q 'com.termux.widget'; then
   echo "  Termux:Widget app detected — creating shortcuts..."
   mkdir -p ~/.shortcuts
@@ -74,12 +71,11 @@ WIDGET_CLAUDE
   echo "    Created 'Claude' home screen shortcut."
 else
   echo "  Termux:Widget app not installed, skipping."
-  echo "    Install from F-Droid for home screen shortcuts."
 fi
 
 # --- Step 5: Storage access ---
 echo ""
-echo "[5/8] Setting up storage access..."
+echo "[5/7] Setting up storage access..."
 if [ -d ~/storage/shared ]; then
   echo "  Storage already configured, skipping."
 else
@@ -90,7 +86,7 @@ fi
 
 # --- Step 6: Install Ubuntu in proot ---
 echo ""
-echo "[6/8] Installing Ubuntu via proot-distro..."
+echo "[6/7] Installing Ubuntu via proot-distro..."
 if proot-distro list --installed 2>/dev/null | grep -q ubuntu; then
   echo "  Ubuntu already installed, skipping."
 else
@@ -99,7 +95,7 @@ fi
 
 # --- Step 7: Bootstrap inside proot ---
 echo ""
-echo "[7/8] Bootstrapping inside proot Ubuntu..."
+echo "[7/7] Bootstrapping inside proot Ubuntu..."
 
 proot-distro login ubuntu -- bash -c 'bash -s' <<'INNER_SCRIPT'
 set -e
@@ -115,11 +111,10 @@ if [ -d "$TERMUX_BIN" ] && ! echo "$PATH" | grep -q "$TERMUX_BIN"; then
 fi
 if [ -d "$TERMUX_BIN" ] && ! grep -q "$TERMUX_BIN" /etc/environment 2>/dev/null; then
   sed -i "s|^PATH=\(.*\)|PATH=\1:$TERMUX_BIN|" /etc/environment
-  echo "Added Termux bin to /etc/environment PATH"
 fi
 
 # --- Install nvm ---
-echo "[proot 1/7] Installing nvm..."
+echo "[proot 1/9] Installing nvm..."
 if [ -d "$HOME/.nvm" ]; then
   echo "  nvm already installed, skipping."
 else
@@ -131,7 +126,7 @@ export NVM_DIR="$HOME/.nvm"
 
 # --- Install Node ---
 echo ""
-echo "[proot 2/7] Installing Node.js (latest LTS)..."
+echo "[proot 2/9] Installing Node.js (latest LTS)..."
 if command -v node &>/dev/null; then
   echo "  Node $(node --version) already installed, skipping."
 else
@@ -140,7 +135,7 @@ fi
 
 # --- Install Claude Code ---
 echo ""
-echo "[proot 3/7] Installing Claude Code..."
+echo "[proot 3/9] Installing Claude Code..."
 if command -v claude &>/dev/null; then
   echo "  Claude Code already installed, skipping."
 else
@@ -151,7 +146,7 @@ fi
 echo ""
 if [ -e /dev/tty ]; then
   echo "============================================"
-  echo "[proot 3.5/7] Claude Code login required."
+  echo "[proot 3.5/9] Claude Code login required."
   echo "  This will open a browser or give you a URL."
   echo "============================================"
   echo ""
@@ -159,14 +154,14 @@ if [ -e /dev/tty ]; then
   echo ""
   echo "Claude Code login complete!"
 else
-  echo "[proot 3.5/7] Skipping Claude Code login (no TTY)."
+  echo "[proot 3.5/9] Skipping Claude Code login (no TTY)."
   echo "  Run manually: proot-distro login ubuntu"
   echo "  Then: claude auth login"
 fi
 
 # --- Install PostgreSQL ---
 echo ""
-echo "[proot 4/7] Installing PostgreSQL..."
+echo "[proot 4/9] Installing PostgreSQL..."
 if command -v pg_isready &>/dev/null; then
   echo "  PostgreSQL already installed, skipping."
 else
@@ -174,8 +169,7 @@ else
   DEBIAN_FRONTEND=noninteractive apt-get install -y -qq postgresql postgresql-client >/dev/null
 fi
 
-# --- Start PostgreSQL and create database ---
-echo "[proot 4.5/7] Configuring PostgreSQL..."
+echo "  Configuring PostgreSQL..."
 PG_VERSION=$(ls /usr/lib/postgresql/ 2>/dev/null | head -1)
 if [ -n "$PG_VERSION" ]; then
   PG_DATA="/var/lib/postgresql/$PG_VERSION/main"
@@ -190,38 +184,38 @@ if [ -n "$PG_VERSION" ]; then
   echo "  PostgreSQL running, database 'mobvibe' ready."
 fi
 
-# --- Install Bun ---
+# --- Install Bun + pnpm ---
 echo ""
-echo "[proot 5/7] Installing Bun..."
+echo "[proot 5/9] Installing Bun and pnpm..."
 if command -v bun &>/dev/null; then
-  echo "  Bun already installed, skipping."
+  echo "  Bun already installed."
 else
   curl -fsSL https://bun.sh/install | bash
-  export BUN_INSTALL="$HOME/.bun"
-  export PATH="$BUN_INSTALL/bin:$PATH"
 fi
 export BUN_INSTALL="$HOME/.bun"
 export PATH="$BUN_INSTALL/bin:$PATH"
 
-# --- Install pnpm ---
-echo "[proot 5.5/7] Installing pnpm..."
 if command -v pnpm &>/dev/null; then
-  echo "  pnpm already installed, skipping."
+  echo "  pnpm already installed."
 else
   npm install -g pnpm
 fi
 
+# --- Install expect for non-interactive CLI login ---
+if ! command -v expect &>/dev/null; then
+  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq expect >/dev/null
+fi
+
 # --- Download and install Mobvibe ---
 echo ""
-echo "[proot 6/7] Installing Mobvibe..."
+echo "[proot 6/9] Installing Mobvibe..."
 MOBVIBE_DIR="/opt/mobvibe"
-if [ -d "$MOBVIBE_DIR/gateway" ]; then
+if [ -d "$MOBVIBE_DIR/gateway/apps" ] && [ -d "$MOBVIBE_DIR/cli/apps" ] && [ -f "$MOBVIBE_DIR/webui/index.html" ]; then
   echo "  Mobvibe already installed, skipping download."
 else
   mkdir -p "$MOBVIBE_DIR"/{gateway,webui,cli}
 
   RELEASE_URLS=$(curl -fsSL "https://api.github.com/repos/m-bers/m-bers.github.io/releases/latest" | grep browser_download_url)
-
   GATEWAY_URL=$(echo "$RELEASE_URLS" | grep gateway | sed 's/.*"\(http[^"]*\)".*/\1/')
   WEBUI_URL=$(echo "$RELEASE_URLS" | grep webui | sed 's/.*"\(http[^"]*\)".*/\1/')
   CLI_URL=$(echo "$RELEASE_URLS" | grep 'cli\.tar' | sed 's/.*"\(http[^"]*\)".*/\1/')
@@ -235,19 +229,80 @@ else
   echo "  Downloading CLI..."
   curl -fsSL "$CLI_URL" | tar xz -C "$MOBVIBE_DIR/cli"
 
-  # Install gateway dependencies
   echo "  Installing gateway dependencies..."
   cd "$MOBVIBE_DIR/gateway"
   pnpm install --frozen-lockfile 2>/dev/null || pnpm install
 
-  # Install CLI dependencies
   echo "  Installing CLI dependencies..."
   cd "$MOBVIBE_DIR/cli"
   pnpm install --frozen-lockfile 2>/dev/null || pnpm install
 fi
 
-# --- Create Mobvibe startup script ---
-cat > "$MOBVIBE_DIR/start.sh" <<'MOBVIBE_START'
+# --- Generate self-signed cert ---
+echo ""
+echo "[proot 7/9] Setting up HTTPS..."
+if [ ! -f "$MOBVIBE_DIR/certs/cert.pem" ]; then
+  mkdir -p "$MOBVIBE_DIR/certs"
+  openssl req -x509 -newkey rsa:2048 \
+    -keyout "$MOBVIBE_DIR/certs/key.pem" \
+    -out "$MOBVIBE_DIR/certs/cert.pem" \
+    -days 365 -nodes \
+    -subj "/CN=localhost" \
+    -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" 2>/dev/null
+  echo "  Self-signed certificate generated."
+fi
+
+# --- Generate auth secret ---
+if [ ! -f "$MOBVIBE_DIR/.auth-secret" ]; then
+  openssl rand -hex 32 > "$MOBVIBE_DIR/.auth-secret"
+fi
+
+# --- Create HTTPS proxy ---
+cat > "$MOBVIBE_DIR/proxy.js" <<'PROXYJS'
+const https = require("https");
+const http = require("http");
+const fs = require("fs");
+const path = require("path");
+const WEBUI = "/opt/mobvibe/webui";
+const PORT = 8443;
+
+const MIME = {
+  ".html":"text/html",".js":"application/javascript",".css":"text/css",
+  ".json":"application/json",".svg":"image/svg+xml",".png":"image/png",
+  ".wasm":"application/wasm",".ico":"image/x-icon",".apk":"application/vnd.android.package-archive"
+};
+
+const sslOpts = {
+  key: fs.readFileSync("/opt/mobvibe/certs/key.pem"),
+  cert: fs.readFileSync("/opt/mobvibe/certs/cert.pem")
+};
+
+function handler(req, res) {
+  if (req.url.startsWith("/api/") || req.url.startsWith("/auth/") || req.url.startsWith("/socket.io")) {
+    const opts = {hostname:"127.0.0.1",port:3005,path:req.url,method:req.method,headers:{...req.headers,host:"localhost:3005"}};
+    const proxy = http.request(opts, (pRes) => {
+      res.writeHead(pRes.statusCode, pRes.headers);
+      pRes.pipe(res);
+    });
+    proxy.on("error", () => res.writeHead(502).end());
+    req.pipe(proxy);
+    return;
+  }
+  let fp = path.join(WEBUI, req.url.split("?")[0]);
+  if (fp.endsWith("/")) fp += "index.html";
+  fs.stat(fp, (err, st) => {
+    if (err || !st.isFile()) fp = path.join(WEBUI, "index.html");
+    const ext = path.extname(fp);
+    res.writeHead(200, {"Content-Type": MIME[ext] || "application/octet-stream"});
+    fs.createReadStream(fp).pipe(res);
+  });
+}
+
+https.createServer(sslOpts, handler).listen(PORT, "0.0.0.0", () => console.log("HTTPS proxy on https://localhost:"+PORT));
+PROXYJS
+
+# --- Create startup script ---
+cat > "$MOBVIBE_DIR/start.sh" <<'STARTSH'
 #!/bin/bash
 export NVM_DIR="$HOME/.nvm"
 [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
@@ -257,90 +312,106 @@ export PATH="$BUN_INSTALL/bin:$PATH"
 PG_VERSION=$(ls /usr/lib/postgresql/ 2>/dev/null | head -1)
 PG_DATA="/var/lib/postgresql/$PG_VERSION/main"
 
-# Start PostgreSQL
 su - postgres -c "/usr/lib/postgresql/$PG_VERSION/bin/pg_ctl -D $PG_DATA -l $PG_DATA/logfile start" 2>/dev/null || true
 sleep 2
 
-# Start gateway
 export DATABASE_URL="postgresql://postgres@localhost:5432/mobvibe"
 export BETTER_AUTH_SECRET="$(cat /opt/mobvibe/.auth-secret 2>/dev/null)"
 export SKIP_EMAIL_VERIFICATION=true
 export PORT=3005
-export GATEWAY_CORS_ORIGINS="http://localhost:8080"
+export GATEWAY_CORS_ORIGINS="https://localhost:8443"
 
 cd /opt/mobvibe/gateway/apps/gateway
 npx drizzle-kit migrate 2>/dev/null
 node dist/index.js &
 
-# Serve WebUI
-npm install -g serve 2>/dev/null
-cd /opt/mobvibe/webui
-serve -s -l 8080 &>/dev/null &
+node /opt/mobvibe/proxy.js &
 
 echo "Mobvibe running:"
-echo "  WebUI:   http://localhost:8080"
+echo "  WebUI:   https://localhost:8443"
 echo "  Gateway: http://localhost:3005"
-MOBVIBE_START
+STARTSH
 chmod +x "$MOBVIBE_DIR/start.sh"
 
-# Generate auth secret if not exists
-if [ ! -f "$MOBVIBE_DIR/.auth-secret" ]; then
-  openssl rand -hex 32 > "$MOBVIBE_DIR/.auth-secret"
-fi
-
-# --- Mobvibe login (interactive) ---
+# --- Configure Mobvibe CLI ---
 echo ""
-echo "[proot 7/7] Setting up Mobvibe CLI..."
-export MOBVIBE_GATEWAY_URL="http://localhost:3005"
+echo "[proot 8/9] Configuring Mobvibe CLI..."
+mkdir -p ~/.mobvibe
+echo '{"enabledAgents":["claude-acp"]}' > ~/.mobvibe/.config.json
 
-# Start services for initial login
+# --- Start services, create user, login CLI ---
+echo ""
+echo "[proot 9/9] Starting Mobvibe and creating default user..."
 "$MOBVIBE_DIR/start.sh" &>/dev/null &
-sleep 3
+sleep 8
 
-if [ -e /dev/tty ]; then
-  echo "============================================"
-  echo "  Mobvibe CLI login required."
-  echo "============================================"
-  echo ""
-  cd "$MOBVIBE_DIR/cli"
-  MOBVIBE_GATEWAY_URL="http://localhost:3005" bun apps/mobvibe-cli/dist/index.js login </dev/tty
-  echo ""
-  echo "Mobvibe login complete!"
-else
-  echo "  Skipping Mobvibe login (no TTY)."
-  echo "  Run manually: /opt/mobvibe/start.sh"
-  echo "  Then: cd /opt/mobvibe/cli && MOBVIBE_GATEWAY_URL=http://localhost:3005 bun apps/mobvibe-cli/dist/index.js login"
-fi
+# Create default user
+curl -s -X POST http://localhost:3005/api/auth/sign-up/email \
+  -H "Content-Type: application/json" \
+  -d '{"email":"admin@mobvibe.local","password":"admin123","name":"Admin"}' >/dev/null 2>&1
+
+# Login CLI via expect
+expect -c "
+spawn env MOBVIBE_GATEWAY_URL=http://localhost:3005 bun /opt/mobvibe/cli/apps/mobvibe-cli/dist/index.js login
+expect \"Email:\"
+send \"admin@mobvibe.local\r\"
+expect \"Password:\"
+send \"admin123\r\"
+expect eof
+" 2>/dev/null
+
+# Get E2EE secret and create auto-login page
+E2EE_SECRET=$(cat ~/.mobvibe/credentials.json 2>/dev/null | grep masterSecret | sed 's/.*"masterSecret": *"\([^"]*\)".*/\1/')
+cat > "$MOBVIBE_DIR/webui/auto-login.html" <<AUTOLOGIN
+<!DOCTYPE html>
+<html>
+<head><title>Logging in...</title></head>
+<body>
+<p>Logging in...</p>
+<script>
+(async () => {
+  try {
+    localStorage.setItem("mobvibe_e2ee_master_secret", "$E2EE_SECRET");
+    const res = await fetch("/api/auth/sign-in/email", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      credentials: "include",
+      body: JSON.stringify({email: "admin@mobvibe.local", password: "admin123"})
+    });
+    if (res.ok) window.location.href = "/";
+    else document.body.innerHTML = "<p>Login failed: " + res.status + "</p>";
+  } catch(e) {
+    document.body.innerHTML = "<p>Error: " + e.message + "</p>";
+  }
+})();
+</script>
+</body>
+</html>
+AUTOLOGIN
+
+# Start CLI daemon
+cd "$MOBVIBE_DIR/cli"
+MOBVIBE_GATEWAY_URL=http://localhost:3005 bun apps/mobvibe-cli/dist/index.js start &>/dev/null &
 
 echo ""
 echo "============================================"
 echo "  Setup complete!"
 echo ""
-echo "  To start: proot-distro login ubuntu"
-echo "  Then run: /opt/mobvibe/start.sh"
+echo "  Open in browser:"
+echo "    https://localhost:8443/auto-login.html"
+echo "  (Accept the self-signed cert warning)"
 echo ""
-echo "  WebUI:   http://localhost:8080"
-echo "  Gateway: http://localhost:3005"
+echo "  To restart services:"
+echo "    proot-distro login ubuntu"
+echo "    /opt/mobvibe/start.sh"
 echo "============================================"
 
 INNER_SCRIPT
 
-# --- Step 8: Auto-start Mobvibe from Termux ---
-echo ""
-echo "[8/8] Configuring auto-start..."
-if ! grep -q 'mobvibe' ~/.bashrc 2>/dev/null; then
-  cat >> ~/.bashrc <<'TERMUX_BASHRC'
-
-# Auto-start Mobvibe inside proot
-if command -v proot-distro &>/dev/null; then
-  proot-distro login ubuntu -- /bin/bash -c 'source ~/.nvm/nvm.sh 2>/dev/null; /opt/mobvibe/start.sh &>/dev/null &'
-fi
-TERMUX_BASHRC
-  echo "Added Mobvibe auto-start to Termux .bashrc"
-fi
-
 echo ""
 echo "============================================"
-echo "  All done! Open http://localhost:8080"
-echo "  in your phone's browser to use Mobvibe."
+echo "  All done!"
+echo ""
+echo "  Open https://localhost:8443/auto-login.html"
+echo "  in your phone's browser."
 echo "============================================"
