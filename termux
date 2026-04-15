@@ -73,6 +73,18 @@ else
   echo "  Storage configured at ~/storage/"
 fi
 
+# --- Add happy daemon auto-start to Termux's .bashrc ---
+if ! grep -q 'happy daemon' ~/.bashrc 2>/dev/null; then
+  cat >> ~/.bashrc <<'TERMUX_BASHRC'
+
+# Auto-start Happy Coder daemon inside proot
+if command -v proot-distro &>/dev/null; then
+  proot-distro login ubuntu -- /bin/bash -c 'source ~/.nvm/nvm.sh 2>/dev/null; if command -v happy &>/dev/null && ! happy daemon status 2>/dev/null | grep -q "Daemon is running"; then happy daemon start &>/dev/null & fi'
+fi
+TERMUX_BASHRC
+  echo "Added happy daemon auto-start to Termux .bashrc"
+fi
+
 # --- Step 5: Install Ubuntu in proot ---
 echo ""
 echo "[5/6] Installing Ubuntu via proot-distro..."
@@ -172,25 +184,6 @@ if [ -e /dev/tty ]; then
 else
   echo "[proot 5/5] Skipping Happy Coder login (no TTY)."
   echo "  Run manually: happy auth login"
-fi
-
-# --- Add happy daemon auto-start to .profile ---
-# .bashrc has an early `[ -z "$PS1" ] && return` that skips everything
-# below it in non-interactive shells. Use .profile instead, which runs
-# for login shells and sources .bashrc (which loads nvm) when interactive.
-if ! grep -q 'happy daemon' ~/.profile 2>/dev/null; then
-  cat >> ~/.profile <<'PROFILE'
-
-# Load nvm for non-interactive contexts
-export NVM_DIR="$HOME/.nvm"
-[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
-
-# Auto-start Happy Coder daemon
-if command -v happy &>/dev/null && ! happy daemon status 2>/dev/null | grep -q "Daemon is running"; then
-  happy daemon start &>/dev/null &
-fi
-PROFILE
-  echo "Added happy daemon auto-start to .profile"
 fi
 
 echo ""
