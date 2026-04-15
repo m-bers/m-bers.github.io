@@ -155,7 +155,7 @@ echo "[proot 4/5] Installing Happy Coder..."
 if command -v happy &>/dev/null; then
   echo "  Happy Coder already installed, skipping."
 else
-  npm install -g happy-coder
+  npm install -g happy
 fi
 
 # --- Happy Coder login (interactive) ---
