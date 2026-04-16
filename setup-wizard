@@ -97,8 +97,17 @@ const HTML = `<!DOCTYPE html>
 <div class="step" id="step5b">
   <h2><span id="s5bicon">5b.</span> Disable Phantom Process Killer</h2>
   <p>Android 12+ kills processes when an app spawns more than 32 children. proot-distro easily exceeds this. Disabling fixes random service crashes.</p>
-  <button onclick="doDisablePhantom()" id="phantomBtn">Disable Phantom Killer</button>
+  <p class="hint">Auto-applied when you connect ADB (step 4) and on every device boot. Click below to re-apply manually.</p>
+  <button onclick="doDisablePhantom()" id="phantomBtn">Re-apply Now</button>
   <div id="s5bstatus"></div>
+</div>
+
+<div class="step" id="step5c">
+  <h2><span id="s5cicon">5c.</span> Whitelist Termux from Battery Optimization</h2>
+  <p>Even with a wakelock, Android can still kill Termux in Doze mode. Adding Termux to the battery-optimization whitelist is the single biggest defense against random kills.</p>
+  <p class="hint">This opens the Android settings dialog. Tap "Don't optimize" or "Allow" for Termux.</p>
+  <button onclick="doBatteryOpt()" id="batteryBtn">Open Battery Settings</button>
+  <div id="s5cstatus"></div>
 </div>
 
 <div class="step" id="step6">
@@ -216,10 +225,24 @@ async function doDisablePhantom() {
   const r = await api("disable-phantom");
   document.getElementById("phantomBtn").disabled = false;
   if (r.success) {
-    setStatus("s5bstatus", "ok", "Phantom killer disabled (settings persist across reboots)");
+    setStatus("s5bstatus", "ok", "Phantom killer disabled");
     log(r.output);
   } else {
     setStatus("s5bstatus", "error", "Failed: " + (r.output || r.error));
+    log(r.output || r.error);
+  }
+}
+
+async function doBatteryOpt() {
+  document.getElementById("batteryBtn").disabled = true;
+  setStatus("s5cstatus", "pending", "Opening battery optimization settings...");
+  const r = await api("battery-opt");
+  document.getElementById("batteryBtn").disabled = false;
+  if (r.success) {
+    setStatus("s5cstatus", "ok", "Settings opened — tap 'Don't optimize' for Termux");
+    log(r.output);
+  } else {
+    setStatus("s5cstatus", "error", "Failed: " + (r.output || r.error));
     log(r.output || r.error);
   }
 }
@@ -291,6 +314,20 @@ const server = http.createServer((req, res) => {
             // Save address for auto-reconnect on next Termux launch
             const termuxHome = "/data/data/com.termux/files/home";
             fs.writeFileSync(`${termuxHome}/.adb-connect-addr`, params.address);
+            // Auto-apply phantom-killer disable now that adb is reachable — the
+            // boot script also reapplies, but doing it here closes the window
+            // between pairing and first reboot.
+            const phantomCmds = [
+              "adb shell /system/bin/device_config set_sync_disabled_for_tests persistent",
+              "adb shell /system/bin/device_config put activity_manager max_phantom_processes 2147483647",
+              "adb shell settings put global settings_enable_monitor_phantom_procs false"
+            ];
+            let phantomOut = "";
+            for (const cmd of phantomCmds) {
+              const r = run(cmd, 5000);
+              phantomOut += `$ ${cmd}\n${r.output}\n`;
+            }
+            result.output = (result.output || "") + "\n[auto phantom-killer disable]\n" + phantomOut;
           }
           break;
         }
@@ -334,6 +371,14 @@ const server = http.createServer((req, res) => {
               result = { success: false, error: "Could not connect to Chrome devtools" };
             }
           }
+          break;
+        }
+        case "battery-opt": {
+          // The REQUEST_IGNORE_BATTERY_OPTIMIZATIONS intent needs the app's own
+          // permission, so we can't invoke it via adb. Open the full list
+          // instead — user taps Termux and selects "Don't optimize".
+          const r = run("adb shell am start -a android.settings.IGNORE_BATTERY_OPTIMIZATION_SETTINGS", 5000);
+          result = { success: r.success, output: r.output };
           break;
         }
         case "disable-phantom": {

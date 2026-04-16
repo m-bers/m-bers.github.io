@@ -21,9 +21,9 @@ DEBIAN_FRONTEND=noninteractive pkg upgrade -y -o Dpkg::Options::="--force-confol
 # --- Step 2: Install core Termux packages ---
 echo ""
 echo "[2/7] Installing core Termux packages..."
-pkg install -y proot-distro openssh android-tools
+pkg install -y proot-distro openssh android-tools termux-services
 
-# --- Step 3: SSH setup with GitHub keys ---
+# --- Step 3: SSH setup with GitHub keys + runit supervision ---
 echo ""
 echo "[3/7] Setting up SSH with GitHub keys..."
 mkdir -p ~/.ssh
@@ -32,8 +32,23 @@ echo "  Pulling SSH keys from github.com/$GITHUB_USER..."
 curl -fsSL "https://github.com/$GITHUB_USER.keys" > ~/.ssh/authorized_keys
 chmod 600 ~/.ssh/authorized_keys
 NKEYS=$(wc -l < ~/.ssh/authorized_keys)
-echo "  Imported $NKEYS key(s). Starting sshd on port 8022..."
-sshd 2>/dev/null || true
+echo "  Imported $NKEYS key(s). Enabling sshd via termux-services (runit-supervised)..."
+
+# Enable sshd so runit restarts it if it dies
+sv-enable sshd 2>/dev/null || rm -f "$PREFIX/var/service/sshd/down"
+
+# Kill any unsupervised sshd started by a previous install
+pkill -x sshd 2>/dev/null || true
+
+# Start runsvdir for this session if not already running
+# (termux-services ships $PREFIX/etc/profile.d/start-services.sh which starts it
+# automatically on each login shell — but we need it right now for this install.)
+if ! pgrep -x runsvdir >/dev/null 2>&1; then
+  nohup runsvdir -P "$PREFIX/var/service" </dev/null &>/dev/null &
+  disown 2>/dev/null || true
+  sleep 2
+fi
+echo "  sshd supervised — will auto-restart if killed."
 
 # --- Step 4: Optional Termux integrations ---
 echo ""
@@ -49,13 +64,45 @@ fi
 if pm list packages 2>/dev/null | grep -q 'com.termux.boot'; then
   echo "  Termux:Boot app detected — setting up boot scripts..."
   mkdir -p ~/.termux/boot
-  cat > ~/.termux/boot/start-mobvibe.sh <<'BOOT'
+  # Single boot script that re-applies every setting that can drift across
+  # reboots (wakelock, ADB reconnect, phantom-killer, sshd), then launches
+  # Mobvibe inside proot.
+  cat > ~/.termux/boot/start-all.sh <<'BOOT'
 #!/data/data/com.termux/files/usr/bin/bash
+PREFIX=/data/data/com.termux/files/usr
+export PATH="$PREFIX/bin:$PATH"
+
+# 1. Hold a wakelock so Termux isn't swept by Doze / low-memory killer.
 termux-wake-lock
+
+# 2. Start runit (sshd supervisor) if not already up.
+# Boot scripts don't run as login shells, so start-services.sh isn't sourced.
+if ! pgrep -x runsvdir >/dev/null 2>&1; then
+  nohup runsvdir -P "$PREFIX/var/service" </dev/null &>/dev/null &
+  disown 2>/dev/null || true
+fi
+
+# 3. Reconnect ADB if previously paired (pairing survives reboot; connection doesn't).
+if [ -f "$HOME/.adb-connect-addr" ]; then
+  adb connect "$(cat "$HOME/.adb-connect-addr")" &>/dev/null || true
+fi
+
+# 4. Re-apply phantom-process killer disable. Idempotent; silently no-ops if
+# adb isn't connected yet. These settings reset on OS update or sync, so
+# reapplying every boot protects the proot session.
+(
+  adb shell /system/bin/device_config set_sync_disabled_for_tests persistent &>/dev/null || true
+  adb shell /system/bin/device_config put activity_manager max_phantom_processes 2147483647 &>/dev/null || true
+  adb shell settings put global settings_enable_monitor_phantom_procs false &>/dev/null || true
+) &
+
+# 5. Start Mobvibe inside proot (supervisord takes over from there).
 proot-distro login ubuntu -- /bin/bash -c "source ~/.nvm/nvm.sh && /opt/mobvibe/start.sh &>/dev/null &"
 BOOT
-  chmod +x ~/.termux/boot/start-mobvibe.sh
-  echo "    Created boot script to auto-start Mobvibe."
+  chmod +x ~/.termux/boot/start-all.sh
+  # Remove the old per-service boot script if upgrading from an older install
+  rm -f ~/.termux/boot/start-mobvibe.sh
+  echo "    Created unified boot script (wakelock + runit + adb + phantom killer + mobvibe)."
 else
   echo "  Termux:Boot app not installed, skipping."
 fi
@@ -512,18 +559,25 @@ chmod +x "$ROOTFS/opt/termux-setup-wizard.sh"
 if ! grep -q 'mobvibe' ~/.bashrc 2>/dev/null; then
   cat >> ~/.bashrc <<'TERMUX_BASHRC'
 
-# Auto-start Mobvibe inside proot
+# Ensure sshd stays supervised for interactive Termux launches (safe if already up).
+if ! pgrep -x runsvdir >/dev/null 2>&1; then
+  nohup runsvdir -P "$PREFIX/var/service" </dev/null &>/dev/null &
+  disown 2>/dev/null || true
+fi
+
+# Reconnect ADB if previously configured (pairing survives reboot, connection doesn't).
+# Also runs from ~/.termux/boot/start-all.sh; this covers manual Termux launches
+# where Termux:Boot didn't fire (e.g. user force-stopped Termux).
+if [ -f "$HOME/.adb-connect-addr" ] && ! adb devices 2>/dev/null | grep -q "device$"; then
+  adb connect "$(cat "$HOME/.adb-connect-addr")" &>/dev/null &
+fi
+
+# Auto-start Mobvibe inside proot if the gateway isn't already responding.
 if command -v proot-distro &>/dev/null && ! curl -s --max-time 2 http://localhost:8080 &>/dev/null; then
   proot-distro login ubuntu -- /bin/bash -c 'source ~/.nvm/nvm.sh 2>/dev/null; export BUN_INSTALL=$HOME/.bun; export PATH=$BUN_INSTALL/bin:$PATH; /opt/mobvibe/start.sh &>/dev/null &'
 fi
 
-# Reconnect ADB if previously configured (pairing survives reboot, connection doesn't)
-if [ -f "$HOME/.adb-connect-addr" ]; then
-  ADB_ADDR=$(cat "$HOME/.adb-connect-addr")
-  adb connect "$ADB_ADDR" &>/dev/null &
-fi
-
-# First-run setup wizard (wakelock + ADB wireless debugging)
+# First-run setup wizard (wakelock + ADB wireless debugging + battery opt + phantom killer).
 # Re-run with: proot-distro login ubuntu -- bash /opt/termux-setup-wizard.sh
 if [ ! -f "$HOME/.termux-setup-done" ]; then
   proot-distro login ubuntu -- bash /opt/termux-setup-wizard.sh
