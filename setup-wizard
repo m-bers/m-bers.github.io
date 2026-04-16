@@ -1,0 +1,315 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# First-run setup wizard for Termux
+# Serves a web UI that guides through wakelock + ADB wireless debugging setup
+
+WIZARD_PORT=8888
+WIZARD_DIR="$PREFIX/share/termux-setup-wizard"
+
+mkdir -p "$WIZARD_DIR"
+
+# Create the backend + frontend as a single Node script
+cat > "$WIZARD_DIR/server.mjs" <<'SERVERJS'
+import http from "http";
+import { execSync, exec } from "child_process";
+import fs from "fs";
+
+const PORT = parseInt(process.env.WIZARD_PORT || "8888");
+
+const HTML = `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Termux Setup</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, sans-serif; background: #0a0a0a; color: #e5e5e5; padding: 16px; max-width: 600px; margin: 0 auto; }
+  h1 { font-size: 1.4em; margin-bottom: 16px; color: #fff; }
+  .step { background: #1a1a1a; border: 1px solid #333; border-radius: 8px; padding: 16px; margin-bottom: 12px; }
+  .step.done { border-color: #22c55e; }
+  .step.active { border-color: #3b82f6; }
+  .step h2 { font-size: 1.1em; margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
+  .step p { font-size: 0.9em; color: #999; margin-bottom: 8px; line-height: 1.5; }
+  .step .status { font-size: 0.85em; padding: 4px 8px; border-radius: 4px; }
+  .status.ok { background: #052e16; color: #22c55e; }
+  .status.pending { background: #1e1b4b; color: #818cf8; }
+  .status.error { background: #450a0a; color: #ef4444; }
+  input { background: #111; border: 1px solid #444; color: #fff; padding: 8px 12px; border-radius: 6px; width: 100%; font-size: 16px; margin-bottom: 8px; }
+  button { background: #3b82f6; color: #fff; border: none; padding: 10px 20px; border-radius: 6px; font-size: 0.95em; cursor: pointer; width: 100%; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  button:hover:not(:disabled) { background: #2563eb; }
+  .hint { font-size: 0.8em; color: #666; margin-top: 4px; }
+  .row { display: flex; gap: 8px; }
+  .row input { flex: 1; }
+  #log { font-family: monospace; font-size: 0.8em; background: #111; padding: 8px; border-radius: 6px; max-height: 150px; overflow-y: auto; white-space: pre-wrap; margin-top: 8px; display: none; }
+</style>
+</head>
+<body>
+<h1>Termux Setup Wizard</h1>
+
+<div class="step" id="step1">
+  <h2><span id="s1icon">1.</span> Acquire Wakelock</h2>
+  <p>Pull down the notification shade and tap the Termux notification. Select <b>"Acquire wakelock"</b> to prevent Android from killing Termux in the background.</p>
+  <button onclick="checkWakelock()">Check Wakelock Status</button>
+  <div id="s1status"></div>
+</div>
+
+<div class="step" id="step2">
+  <h2><span id="s2icon">2.</span> Enable Wireless Debugging</h2>
+  <p>Go to <b>Settings &rarr; Developer options &rarr; Wireless debugging</b> and enable it.</p>
+  <p class="hint">If you don't see Developer options: go to Settings &rarr; About phone &rarr; tap "Build number" 7 times.</p>
+</div>
+
+<div class="step" id="step3">
+  <h2><span id="s3icon">3.</span> Pair ADB</h2>
+  <p>In Wireless debugging settings, tap <b>"Pair device with pairing code"</b>. Enter the info below quickly (it expires):</p>
+  <div class="row">
+    <input id="pairIp" placeholder="IP:Port (e.g. 192.168.1.5:37429)">
+    <input id="pairCode" placeholder="Pairing code" style="max-width: 120px;">
+  </div>
+  <button onclick="doPair()" id="pairBtn">Pair</button>
+  <div id="s3status"></div>
+</div>
+
+<div class="step" id="step4">
+  <h2><span id="s4icon">4.</span> Connect ADB</h2>
+  <p>Enter the <b>IP address &amp; Port</b> shown at the top of the Wireless debugging screen (not the pairing port):</p>
+  <input id="connectAddr" placeholder="IP:Port (e.g. 192.168.1.5:33061)">
+  <button onclick="doConnect()" id="connectBtn">Connect</button>
+  <div id="s4status"></div>
+</div>
+
+<div class="step" id="step5">
+  <h2><span id="s5icon">5.</span> Setup Complete</h2>
+  <p>Browser debugging is ready. Claude Code can now control Chrome on this device via Playwright.</p>
+  <button onclick="doForward()" id="forwardBtn">Verify Chrome Debug Access</button>
+  <div id="s5status"></div>
+</div>
+
+<div id="log"></div>
+
+<script>
+function log(msg) {
+  const el = document.getElementById("log");
+  el.style.display = "block";
+  el.textContent += msg + "\\n";
+  el.scrollTop = el.scrollHeight;
+}
+
+function setStatus(id, cls, text) {
+  document.getElementById(id).innerHTML = '<div class="status ' + cls + '">' + text + '</div>';
+}
+
+function markDone(n) {
+  document.getElementById("step" + n).classList.add("done");
+  document.getElementById("step" + n).classList.remove("active");
+  document.getElementById("s" + n + "icon").textContent = "\\u2713";
+}
+
+function markActive(n) {
+  document.getElementById("step" + n).classList.add("active");
+}
+
+async function api(action, params) {
+  const res = await fetch("/api/" + action, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(params)
+  });
+  return res.json();
+}
+
+async function checkWakelock() {
+  const r = await api("check-wakelock");
+  if (r.held) {
+    setStatus("s1status", "ok", "Wakelock is held");
+    markDone(1);
+    markActive(2);
+  } else {
+    setStatus("s1status", "pending", "Wakelock not held. Pull down notifications and tap Termux &rarr; Acquire wakelock");
+  }
+}
+
+async function doPair() {
+  const ip = document.getElementById("pairIp").value.trim();
+  const code = document.getElementById("pairCode").value.trim();
+  if (!ip || !code) { setStatus("s3status", "error", "Enter both IP:port and code"); return; }
+  document.getElementById("pairBtn").disabled = true;
+  setStatus("s3status", "pending", "Pairing...");
+  const r = await api("pair", {address: ip, code: code});
+  document.getElementById("pairBtn").disabled = false;
+  if (r.success) {
+    setStatus("s3status", "ok", "Paired successfully!");
+    markDone(3);
+    markActive(4);
+    log(r.output);
+  } else {
+    setStatus("s3status", "error", "Pairing failed: " + (r.output || r.error));
+    log(r.output || r.error);
+  }
+}
+
+async function doConnect() {
+  const addr = document.getElementById("connectAddr").value.trim();
+  if (!addr) { setStatus("s4status", "error", "Enter the IP:Port"); return; }
+  document.getElementById("connectBtn").disabled = true;
+  setStatus("s4status", "pending", "Connecting...");
+  const r = await api("connect", {address: addr});
+  document.getElementById("connectBtn").disabled = false;
+  if (r.success) {
+    setStatus("s4status", "ok", "Connected to " + addr);
+    markDone(4);
+    markActive(5);
+    log(r.output);
+  } else {
+    setStatus("s4status", "error", "Connection failed: " + (r.output || r.error));
+    log(r.output || r.error);
+  }
+}
+
+async function doForward() {
+  document.getElementById("forwardBtn").disabled = true;
+  setStatus("s5status", "pending", "Setting up Chrome debug port...");
+  const r = await api("forward");
+  document.getElementById("forwardBtn").disabled = false;
+  if (r.success) {
+    setStatus("s5status", "ok", "Chrome debugging ready! Browser: " + (r.browser || "detected"));
+    markDone(5);
+    log(r.output);
+  } else {
+    setStatus("s5status", "error", "Failed: " + (r.output || r.error));
+    log(r.output || r.error);
+  }
+}
+
+// Auto-check wakelock on load
+checkWakelock();
+markActive(1);
+</script>
+</body>
+</html>`;
+
+function run(cmd, timeout = 10000) {
+  try {
+    return { success: true, output: execSync(cmd, { timeout, encoding: "utf-8" }).trim() };
+  } catch (e) {
+    return { success: false, output: e.stderr?.trim() || e.message, error: e.message };
+  }
+}
+
+const server = http.createServer((req, res) => {
+  if (req.method === "GET") {
+    res.writeHead(200, { "Content-Type": "text/html" });
+    res.end(HTML);
+    return;
+  }
+
+  if (req.method === "POST" && req.url.startsWith("/api/")) {
+    let body = "";
+    req.on("data", c => body += c);
+    req.on("end", () => {
+      const params = body ? JSON.parse(body) : {};
+      const action = req.url.replace("/api/", "");
+      let result;
+
+      switch (action) {
+        case "check-wakelock": {
+          const r = run("cat /proc/locks 2>/dev/null | wc -l");
+          const termuxWakelock = run("ls /data/data/com.termux/files/usr/var/run/wakelock 2>/dev/null");
+          result = { held: termuxWakelock.success && termuxWakelock.output !== "" };
+          break;
+        }
+        case "pair": {
+          result = run(`adb pair ${params.address} ${params.code}`, 15000);
+          result.success = result.output?.includes("Successfully paired") || false;
+          break;
+        }
+        case "connect": {
+          result = run(`adb connect ${params.address}`, 10000);
+          result.success = result.output?.includes("connected") || false;
+          break;
+        }
+        case "forward": {
+          // Find devtools socket and forward
+          const sockets = run("adb shell cat /proc/net/unix 2>/dev/null | grep devtools");
+          if (!sockets.success) {
+            result = { success: false, error: "No ADB device connected or no browser running" };
+            break;
+          }
+          run("adb forward tcp:9222 localabstract:chrome_devtools_remote");
+          const version = run("curl -s --max-time 3 http://localhost:9222/json/version");
+          if (version.success && version.output.includes("Browser")) {
+            try {
+              const info = JSON.parse(version.output);
+              result = { success: true, browser: info.Browser, output: version.output };
+            } catch {
+              result = { success: true, browser: "unknown", output: version.output };
+            }
+          } else {
+            // Try PID-specific socket
+            const pidSocket = sockets.output.split("\n").find(l => l.includes("_"));
+            if (pidSocket) {
+              const name = pidSocket.match(/@(chrome_devtools_remote_\d+)/)?.[1];
+              if (name) {
+                run(`adb forward tcp:9222 localabstract:${name}`);
+                const v2 = run("curl -s --max-time 3 http://localhost:9222/json/version");
+                if (v2.success && v2.output.includes("Browser")) {
+                  try {
+                    const info = JSON.parse(v2.output);
+                    result = { success: true, browser: info.Browser, output: v2.output };
+                  } catch {
+                    result = { success: true, browser: "unknown", output: v2.output };
+                  }
+                } else {
+                  result = { success: false, error: "Chrome devtools not responding", output: v2.output };
+                }
+              }
+            }
+            if (!result) {
+              result = { success: false, error: "Could not connect to Chrome devtools" };
+            }
+          }
+          break;
+        }
+        default:
+          result = { success: false, error: "Unknown action: " + action };
+      }
+
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(result));
+    });
+    return;
+  }
+
+  res.writeHead(404);
+  res.end("Not found");
+});
+
+server.listen(PORT, "0.0.0.0", () => {
+  console.log(`Setup wizard running at http://localhost:${PORT}`);
+  // Try to open in browser
+  try { execSync(`termux-open-url http://localhost:${PORT}`); } catch {}
+});
+SERVERJS
+
+# Check if this is first run
+if [ ! -f "$HOME/.termux-setup-done" ]; then
+  echo "Starting setup wizard..."
+  pkg install -y android-tools 2>/dev/null
+  node "$WIZARD_DIR/server.mjs" &
+  WIZARD_PID=$!
+  echo $WIZARD_PID > /tmp/setup-wizard.pid
+  termux-open-url "http://localhost:$WIZARD_PORT" 2>/dev/null
+  echo ""
+  echo "============================================"
+  echo "  Setup wizard running at:"
+  echo "  http://localhost:$WIZARD_PORT"
+  echo ""
+  echo "  Open in your browser to continue setup."
+  echo "  Press Ctrl+C when done."
+  echo "============================================"
+  wait $WIZARD_PID 2>/dev/null
+  touch "$HOME/.termux-setup-done"
+else
+  echo "Setup already completed. Delete ~/.termux-setup-done to run again."
+fi

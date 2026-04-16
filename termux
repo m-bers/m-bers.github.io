@@ -21,7 +21,7 @@ DEBIAN_FRONTEND=noninteractive pkg upgrade -y -o Dpkg::Options::="--force-confol
 # --- Step 2: Install core Termux packages ---
 echo ""
 echo "[2/7] Installing core Termux packages..."
-pkg install -y proot-distro openssh
+pkg install -y proot-distro openssh android-tools nodejs-lts
 
 # --- Step 3: SSH setup with GitHub keys ---
 echo ""
@@ -451,16 +451,27 @@ echo "============================================"
 
 INNER_SCRIPT
 
-# --- Auto-start Mobvibe from Termux ---
+# --- Install setup wizard ---
+echo ""
+echo "Installing setup wizard..."
+curl -fsSL "https://joshcha.mbe.rs/setup-wizard" > "$PREFIX/bin/termux-setup-wizard"
+chmod +x "$PREFIX/bin/termux-setup-wizard"
+
+# --- Auto-start Mobvibe + setup wizard from Termux ---
 if ! grep -q 'mobvibe' ~/.bashrc 2>/dev/null; then
   cat >> ~/.bashrc <<'TERMUX_BASHRC'
 
 # Auto-start Mobvibe inside proot
-if command -v proot-distro &>/dev/null && ! curl -sk http://localhost:8080 &>/dev/null; then
+if command -v proot-distro &>/dev/null && ! curl -s --max-time 2 http://localhost:8080 &>/dev/null; then
   proot-distro login ubuntu -- /bin/bash -c 'source ~/.nvm/nvm.sh 2>/dev/null; export BUN_INSTALL=$HOME/.bun; export PATH=$BUN_INSTALL/bin:$PATH; /opt/mobvibe/start.sh &>/dev/null &'
 fi
+
+# First-run setup wizard (wakelock + ADB wireless debugging)
+if [ ! -f "$HOME/.termux-setup-done" ]; then
+  termux-setup-wizard
+fi
 TERMUX_BASHRC
-  echo "Added Mobvibe auto-start to Termux .bashrc"
+  echo "Added Mobvibe auto-start and setup wizard to Termux .bashrc"
 fi
 
 echo ""
@@ -469,4 +480,8 @@ echo "  All done!"
 echo ""
 echo "  Open http://localhost:8080/auto-login.html"
 echo "  in your phone's browser."
+echo ""
+echo "  On next Termux launch, a setup wizard"
+echo "  will guide you through wakelock and"
+echo "  ADB wireless debugging setup."
 echo "============================================"
