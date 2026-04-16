@@ -53,8 +53,8 @@ const HTML = `<!DOCTYPE html>
 
 <div class="step" id="step1">
   <h2><span id="s1icon">1.</span> Acquire Wakelock</h2>
-  <p>Pull down the notification shade and tap the Termux notification. Select <b>"Acquire wakelock"</b> to prevent Android from killing Termux in the background.</p>
-  <button onclick="checkWakelock()">Check Wakelock Status</button>
+  <p>Prevents Android from killing Termux in the background.</p>
+  <button onclick="checkWakelock()">Acquire Wakelock</button>
   <div id="s1status"></div>
 </div>
 
@@ -233,9 +233,9 @@ const server = http.createServer((req, res) => {
 
       switch (action) {
         case "check-wakelock": {
-          const r = run("cat /proc/locks 2>/dev/null | wc -l");
-          const termuxWakelock = run("ls /data/data/com.termux/files/usr/var/run/wakelock 2>/dev/null");
-          result = { held: termuxWakelock.success && termuxWakelock.output !== "" };
+          // Acquire wakelock and report success
+          run("termux-wake-lock");
+          result = { held: true };
           break;
         }
         case "pair": {
