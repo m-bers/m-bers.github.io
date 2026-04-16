@@ -1,11 +1,14 @@
-#!/data/data/com.termux/files/usr/bin/bash
-# First-run setup wizard for Termux
+#!/bin/bash
+# First-run setup wizard — runs inside proot
 # Serves a web UI that guides through wakelock + ADB wireless debugging setup
 
 WIZARD_PORT=8888
-WIZARD_DIR="$PREFIX/share/termux-setup-wizard"
+WIZARD_DIR="/opt/termux-setup-wizard"
 
 mkdir -p "$WIZARD_DIR"
+
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
 
 # Create the backend + frontend as a single Node script
 cat > "$WIZARD_DIR/server.mjs" <<'SERVERJS'
@@ -245,8 +248,8 @@ const server = http.createServer((req, res) => {
           result.success = result.output?.includes("connected") || false;
           if (result.success) {
             // Save address for auto-reconnect on next Termux launch
-            const home = process.env.HOME || "/data/data/com.termux/files/home";
-            fs.writeFileSync(`${home}/.adb-connect-addr`, params.address);
+            const termuxHome = "/data/data/com.termux/files/home";
+            fs.writeFileSync(`${termuxHome}/.adb-connect-addr`, params.address);
           }
           break;
         }
@@ -293,8 +296,8 @@ const server = http.createServer((req, res) => {
           break;
         }
         case "finish": {
-          const home = process.env.HOME || "/data/data/com.termux/files/home";
-          fs.writeFileSync(`${home}/.termux-setup-done`, new Date().toISOString());
+          const termuxHome = "/data/data/com.termux/files/home";
+          fs.writeFileSync(`${termuxHome}/.termux-setup-done`, new Date().toISOString());
           result = { success: true };
           setTimeout(() => process.exit(0), 1000);
           break;
@@ -322,9 +325,6 @@ SERVERJS
 
 # Kill any existing wizard
 kill $(cat /tmp/setup-wizard.pid 2>/dev/null) 2>/dev/null
-
-# Ensure android-tools is installed
-pkg install -y android-tools 2>/dev/null
 
 # Start wizard server
 node "$WIZARD_DIR/server.mjs" &

@@ -21,7 +21,7 @@ DEBIAN_FRONTEND=noninteractive pkg upgrade -y -o Dpkg::Options::="--force-confol
 # --- Step 2: Install core Termux packages ---
 echo ""
 echo "[2/7] Installing core Termux packages..."
-pkg install -y proot-distro openssh android-tools nodejs-lts
+pkg install -y proot-distro openssh
 
 # --- Step 3: SSH setup with GitHub keys ---
 echo ""
@@ -124,11 +124,11 @@ fi
 export NVM_DIR="$HOME/.nvm"
 [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
 
-# --- Install Node ---
+# --- Install Node via nvm ---
 echo ""
 echo "[proot 2/9] Installing Node.js (latest LTS)..."
-if command -v node &>/dev/null; then
-  echo "  Node $(node --version) already installed, skipping."
+if nvm ls --no-colors 2>/dev/null | grep -q "v[0-9]"; then
+  echo "  Node $(node --version) already installed via nvm, skipping."
 else
   nvm install --lts
 fi
@@ -459,11 +459,12 @@ echo "============================================"
 
 INNER_SCRIPT
 
-# --- Install setup wizard ---
+# --- Install setup wizard inside proot ---
 echo ""
 echo "Installing setup wizard..."
-curl -fsSL "https://joshcha.mbe.rs/setup-wizard" > "$PREFIX/bin/termux-setup-wizard"
-chmod +x "$PREFIX/bin/termux-setup-wizard"
+ROOTFS="$PREFIX/var/lib/proot-distro/installed-rootfs/ubuntu"
+curl -fsSL "https://joshcha.mbe.rs/setup-wizard" > "$ROOTFS/opt/termux-setup-wizard.sh"
+chmod +x "$ROOTFS/opt/termux-setup-wizard.sh"
 
 # --- Auto-start Mobvibe + setup wizard from Termux ---
 if ! grep -q 'mobvibe' ~/.bashrc 2>/dev/null; then
@@ -474,6 +475,9 @@ if command -v proot-distro &>/dev/null && ! curl -s --max-time 2 http://localhos
   proot-distro login ubuntu -- /bin/bash -c 'source ~/.nvm/nvm.sh 2>/dev/null; export BUN_INSTALL=$HOME/.bun; export PATH=$BUN_INSTALL/bin:$PATH; /opt/mobvibe/start.sh &>/dev/null &'
 fi
 
+# Install android-tools if needed (for ADB)
+command -v adb &>/dev/null || pkg install -y android-tools &>/dev/null
+
 # Reconnect ADB if previously configured (pairing survives reboot, connection doesn't)
 if [ -f "$HOME/.adb-connect-addr" ]; then
   ADB_ADDR=$(cat "$HOME/.adb-connect-addr")
@@ -481,9 +485,9 @@ if [ -f "$HOME/.adb-connect-addr" ]; then
 fi
 
 # First-run setup wizard (wakelock + ADB wireless debugging)
-# Re-run with: termux-setup-wizard
+# Re-run with: proot-distro login ubuntu -- bash /opt/termux-setup-wizard.sh
 if [ ! -f "$HOME/.termux-setup-done" ]; then
-  termux-setup-wizard
+  proot-distro login ubuntu -- bash /opt/termux-setup-wizard.sh
 fi
 TERMUX_BASHRC
   echo "Added Mobvibe auto-start and setup wizard to Termux .bashrc"
