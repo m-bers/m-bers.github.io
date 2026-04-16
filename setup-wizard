@@ -94,6 +94,13 @@ const HTML = `<!DOCTYPE html>
   <div id="s5status"></div>
 </div>
 
+<div class="step" id="step5b">
+  <h2><span id="s5bicon">5b.</span> Disable Phantom Process Killer</h2>
+  <p>Android 12+ kills processes when an app spawns more than 32 children. proot-distro easily exceeds this. Disabling fixes random service crashes.</p>
+  <button onclick="doDisablePhantom()" id="phantomBtn">Disable Phantom Killer</button>
+  <div id="s5bstatus"></div>
+</div>
+
 <div class="step" id="step6">
   <h2><span id="s6icon">6.</span> Done!</h2>
   <p>All set. Click below to finish and close the wizard. You can re-run it anytime with <code>termux-setup-wizard</code>.</p>
@@ -199,6 +206,20 @@ async function doForward() {
     log(r.output);
   } else {
     setStatus("s5status", "error", "Failed: " + (r.output || r.error));
+    log(r.output || r.error);
+  }
+}
+
+async function doDisablePhantom() {
+  document.getElementById("phantomBtn").disabled = true;
+  setStatus("s5bstatus", "pending", "Running ADB shell commands...");
+  const r = await api("disable-phantom");
+  document.getElementById("phantomBtn").disabled = false;
+  if (r.success) {
+    setStatus("s5bstatus", "ok", "Phantom killer disabled (settings persist across reboots)");
+    log(r.output);
+  } else {
+    setStatus("s5bstatus", "error", "Failed: " + (r.output || r.error));
     log(r.output || r.error);
   }
 }
@@ -313,6 +334,22 @@ const server = http.createServer((req, res) => {
               result = { success: false, error: "Could not connect to Chrome devtools" };
             }
           }
+          break;
+        }
+        case "disable-phantom": {
+          const cmds = [
+            "adb shell /system/bin/device_config set_sync_disabled_for_tests persistent",
+            "adb shell /system/bin/device_config put activity_manager max_phantom_processes 2147483647",
+            "adb shell settings put global settings_enable_monitor_phantom_procs false"
+          ];
+          let output = "";
+          let allOk = true;
+          for (const cmd of cmds) {
+            const r = run(cmd, 5000);
+            output += `$ ${cmd}\n${r.output}\n`;
+            if (!r.success) allOk = false;
+          }
+          result = { success: allOk, output };
           break;
         }
         case "finish": {

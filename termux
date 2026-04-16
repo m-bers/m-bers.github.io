@@ -219,10 +219,8 @@ else
   npm install -g pnpm
 fi
 
-# --- Install expect for non-interactive CLI login ---
-if ! command -v expect &>/dev/null; then
-  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq expect >/dev/null
-fi
+# --- Install expect and supervisor ---
+DEBIAN_FRONTEND=noninteractive apt-get install -y -qq expect supervisor >/dev/null 2>&1
 
 # --- Download and install Mobvibe ---
 echo ""
@@ -339,6 +337,54 @@ process.on("uncaughtException", (err) => {
 server.listen(PORT, "0.0.0.0", () => console.log("HTTP proxy on http://localhost:"+PORT));
 PROXYJS
 
+# --- Create supervisord config ---
+PG_VERSION=$(ls /usr/lib/postgresql/ 2>/dev/null | head -1)
+NODE_BIN=$(which node)
+BUN_BIN="$HOME/.bun/bin/bun"
+
+cat > "$MOBVIBE_DIR/supervisord.conf" <<SUPCONF
+[supervisord]
+nodaemon=true
+logfile=/opt/mobvibe/supervisord.log
+pidfile=/opt/mobvibe/supervisord.pid
+
+[program:postgres]
+command=/usr/lib/postgresql/$PG_VERSION/bin/postgres -D /var/lib/postgresql/$PG_VERSION/main
+user=postgres
+autorestart=true
+stdout_logfile=/opt/mobvibe/postgres.log
+stderr_logfile=/opt/mobvibe/postgres.err
+priority=1
+
+[program:gateway]
+command=$NODE_BIN dist/index.js
+directory=/opt/mobvibe/gateway/apps/gateway
+environment=NODE_ENV=development,DATABASE_URL="postgresql://postgres@localhost:5432/mobvibe",BETTER_AUTH_SECRET="%(ENV_BETTER_AUTH_SECRET)s",SKIP_EMAIL_VERIFICATION=true,PORT=3005,GATEWAY_CORS_ORIGINS="http://localhost:8080"
+autorestart=true
+stdout_logfile=/opt/mobvibe/gateway.log
+stderr_logfile=/opt/mobvibe/gateway.err
+priority=2
+startsecs=5
+
+[program:proxy]
+command=$NODE_BIN /opt/mobvibe/proxy.js
+autorestart=true
+stdout_logfile=/opt/mobvibe/proxy.log
+stderr_logfile=/opt/mobvibe/proxy.err
+priority=3
+startsecs=2
+
+[program:cli-daemon]
+command=$BUN_BIN apps/mobvibe-cli/dist/index.js start --foreground
+directory=/opt/mobvibe/cli
+environment=MOBVIBE_GATEWAY_URL="http://localhost:3005",HOME="/root",PATH="$HOME/.bun/bin:/root/.nvm/versions/node/$(node --version)/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+autorestart=true
+stdout_logfile=/opt/mobvibe/cli.log
+stderr_logfile=/opt/mobvibe/cli.err
+priority=4
+startsecs=10
+SUPCONF
+
 # --- Create startup script ---
 cat > "$MOBVIBE_DIR/start.sh" <<'STARTSH'
 #!/bin/bash
@@ -347,41 +393,30 @@ export NVM_DIR="$HOME/.nvm"
 export BUN_INSTALL="$HOME/.bun"
 export PATH="$BUN_INSTALL/bin:$PATH"
 
-# Kill old processes
-for port in 3005 8080; do
-  PID=$(lsof -ti:$port 2>/dev/null)
-  [ -n "$PID" ] && kill $PID 2>/dev/null
-done
-sleep 1
-
-# Start PostgreSQL
+# Initialize PostgreSQL data dir if needed
 PG_VERSION=$(ls /usr/lib/postgresql/ 2>/dev/null | head -1)
 PG_DATA="/var/lib/postgresql/$PG_VERSION/main"
+if [ ! -d "$PG_DATA/base" ]; then
+  chown -R postgres:postgres /var/lib/postgresql/
+  su - postgres -c "/usr/lib/postgresql/$PG_VERSION/bin/initdb -D $PG_DATA" 2>/dev/null
+fi
+
+# Run drizzle migrations once before supervisord starts
+export DATABASE_URL="postgresql://postgres@localhost:5432/mobvibe"
 su - postgres -c "/usr/lib/postgresql/$PG_VERSION/bin/pg_ctl -D $PG_DATA -l $PG_DATA/logfile start" 2>/dev/null || true
 sleep 2
-
-# Start gateway
-export NODE_ENV=development
-export DATABASE_URL="postgresql://postgres@localhost:5432/mobvibe"
-export BETTER_AUTH_SECRET="$(cat /opt/mobvibe/.auth-secret 2>/dev/null)"
-export SKIP_EMAIL_VERIFICATION=true
-export PORT=3005
-export GATEWAY_CORS_ORIGINS="http://localhost:8080"
-
+su - postgres -c "psql -tc \"SELECT 1 FROM pg_database WHERE datname='mobvibe'\" | grep -q 1 || psql -c 'CREATE DATABASE mobvibe;'" 2>/dev/null
 cd /opt/mobvibe/gateway/apps/gateway
-npx drizzle-kit migrate 2>/dev/null
-node dist/index.js &
+npx drizzle-kit migrate 2>/dev/null || true
+su - postgres -c "/usr/lib/postgresql/$PG_VERSION/bin/pg_ctl -D $PG_DATA stop" 2>/dev/null
 
-# Start HTTP proxy
-node /opt/mobvibe/proxy.js &
+# Export env for supervisord
+export BETTER_AUTH_SECRET="$(cat /opt/mobvibe/.auth-secret 2>/dev/null)"
 
-# Start CLI daemon
-cd /opt/mobvibe/cli
-MOBVIBE_GATEWAY_URL=http://localhost:3005 bun apps/mobvibe-cli/dist/index.js start &>/dev/null &
-
-echo "Mobvibe running:"
+echo "Starting all services via supervisord..."
 echo "  WebUI:   http://localhost:8080"
 echo "  Gateway: http://localhost:3005"
+exec supervisord -c /opt/mobvibe/supervisord.conf
 STARTSH
 chmod +x "$MOBVIBE_DIR/start.sh"
 
