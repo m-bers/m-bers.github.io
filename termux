@@ -21,7 +21,7 @@ DEBIAN_FRONTEND=noninteractive pkg upgrade -y -o Dpkg::Options::="--force-confol
 # --- Step 2: Install core Termux packages ---
 echo ""
 echo "[2/7] Installing core Termux packages..."
-pkg install -y proot-distro openssh
+pkg install -y proot-distro openssh android-tools
 
 # --- Step 3: SSH setup with GitHub keys ---
 echo ""
@@ -481,9 +481,6 @@ if ! grep -q 'mobvibe' ~/.bashrc 2>/dev/null; then
 if command -v proot-distro &>/dev/null && ! curl -s --max-time 2 http://localhost:8080 &>/dev/null; then
   proot-distro login ubuntu -- /bin/bash -c 'source ~/.nvm/nvm.sh 2>/dev/null; export BUN_INSTALL=$HOME/.bun; export PATH=$BUN_INSTALL/bin:$PATH; /opt/mobvibe/start.sh &>/dev/null &'
 fi
-
-# Install android-tools if needed (for ADB)
-command -v adb &>/dev/null || pkg install -y android-tools &>/dev/null
 
 # Reconnect ADB if previously configured (pairing survives reboot, connection doesn't)
 if [ -f "$HOME/.adb-connect-addr" ]; then
