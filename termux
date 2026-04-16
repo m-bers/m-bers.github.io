@@ -466,7 +466,14 @@ if command -v proot-distro &>/dev/null && ! curl -s --max-time 2 http://localhos
   proot-distro login ubuntu -- /bin/bash -c 'source ~/.nvm/nvm.sh 2>/dev/null; export BUN_INSTALL=$HOME/.bun; export PATH=$BUN_INSTALL/bin:$PATH; /opt/mobvibe/start.sh &>/dev/null &'
 fi
 
+# Reconnect ADB if previously configured (pairing survives reboot, connection doesn't)
+if [ -f "$HOME/.adb-connect-addr" ]; then
+  ADB_ADDR=$(cat "$HOME/.adb-connect-addr")
+  adb connect "$ADB_ADDR" &>/dev/null &
+fi
+
 # First-run setup wizard (wakelock + ADB wireless debugging)
+# Re-run with: termux-setup-wizard
 if [ ! -f "$HOME/.termux-setup-done" ]; then
   termux-setup-wizard
 fi

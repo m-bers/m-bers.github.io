@@ -46,6 +46,7 @@ const HTML = `<!DOCTYPE html>
 </head>
 <body>
 <h1>Termux Setup Wizard</h1>
+<p style="font-size:0.85em;color:#666;margin-bottom:12px;">ADB pairing survives reboots, but the connection doesn't. Termux will auto-reconnect on launch. Re-run this wizard anytime with: <code style="background:#222;padding:2px 6px;border-radius:4px;">termux-setup-wizard</code></p>
 
 <div class="step" id="step1">
   <h2><span id="s1icon">1.</span> Acquire Wakelock</h2>
@@ -80,10 +81,17 @@ const HTML = `<!DOCTYPE html>
 </div>
 
 <div class="step" id="step5">
-  <h2><span id="s5icon">5.</span> Setup Complete</h2>
-  <p>Browser debugging is ready. Claude Code can now control Chrome on this device via Playwright.</p>
+  <h2><span id="s5icon">5.</span> Verify Browser Debugging</h2>
+  <p>Make sure Chrome is open on this device, then verify the debug connection.</p>
   <button onclick="doForward()" id="forwardBtn">Verify Chrome Debug Access</button>
   <div id="s5status"></div>
+</div>
+
+<div class="step" id="step6">
+  <h2><span id="s6icon">6.</span> Done!</h2>
+  <p>All set. Click below to finish and close the wizard. You can re-run it anytime with <code>termux-setup-wizard</code>.</p>
+  <button onclick="doFinish()" id="finishBtn">Complete Setup</button>
+  <div id="s6status"></div>
 </div>
 
 <div id="log"></div>
@@ -182,6 +190,14 @@ async function doForward() {
   }
 }
 
+async function doFinish() {
+  const r = await api("finish");
+  if (r.success) {
+    setStatus("s6status", "ok", "Setup complete! You can close this tab.");
+    markDone(6);
+  }
+}
+
 // Auto-check wakelock on load
 checkWakelock();
 markActive(1);
@@ -227,6 +243,11 @@ const server = http.createServer((req, res) => {
         case "connect": {
           result = run(`adb connect ${params.address}`, 10000);
           result.success = result.output?.includes("connected") || false;
+          if (result.success) {
+            // Save address for auto-reconnect on next Termux launch
+            const home = process.env.HOME || "/data/data/com.termux/files/home";
+            fs.writeFileSync(`${home}/.adb-connect-addr`, params.address);
+          }
           break;
         }
         case "forward": {
@@ -271,6 +292,13 @@ const server = http.createServer((req, res) => {
           }
           break;
         }
+        case "finish": {
+          const home = process.env.HOME || "/data/data/com.termux/files/home";
+          fs.writeFileSync(`${home}/.termux-setup-done`, new Date().toISOString());
+          result = { success: true };
+          setTimeout(() => process.exit(0), 1000);
+          break;
+        }
         default:
           result = { success: false, error: "Unknown action: " + action };
       }
@@ -292,24 +320,28 @@ server.listen(PORT, "0.0.0.0", () => {
 });
 SERVERJS
 
-# Check if this is first run
-if [ ! -f "$HOME/.termux-setup-done" ]; then
-  echo "Starting setup wizard..."
-  pkg install -y android-tools 2>/dev/null
-  node "$WIZARD_DIR/server.mjs" &
-  WIZARD_PID=$!
-  echo $WIZARD_PID > /tmp/setup-wizard.pid
-  termux-open-url "http://localhost:$WIZARD_PORT" 2>/dev/null
-  echo ""
-  echo "============================================"
-  echo "  Setup wizard running at:"
-  echo "  http://localhost:$WIZARD_PORT"
-  echo ""
-  echo "  Open in your browser to continue setup."
-  echo "  Press Ctrl+C when done."
-  echo "============================================"
-  wait $WIZARD_PID 2>/dev/null
-  touch "$HOME/.termux-setup-done"
-else
-  echo "Setup already completed. Delete ~/.termux-setup-done to run again."
-fi
+# Kill any existing wizard
+kill $(cat /tmp/setup-wizard.pid 2>/dev/null) 2>/dev/null
+
+# Ensure android-tools is installed
+pkg install -y android-tools 2>/dev/null
+
+# Start wizard server
+node "$WIZARD_DIR/server.mjs" &
+WIZARD_PID=$!
+echo $WIZARD_PID > /tmp/setup-wizard.pid
+
+termux-open-url "http://localhost:$WIZARD_PORT" 2>/dev/null
+
+echo ""
+echo "============================================"
+echo "  Setup wizard running at:"
+echo "  http://localhost:$WIZARD_PORT"
+echo ""
+echo "  Open in your browser to continue setup."
+echo "  The wizard will mark setup as complete"
+echo "  once all steps are done."
+echo "============================================"
+
+# Wait for user to complete - wizard sets the flag
+wait $WIZARD_PID 2>/dev/null
