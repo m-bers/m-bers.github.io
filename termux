@@ -34,7 +34,9 @@ chmod 600 ~/.ssh/authorized_keys
 NKEYS=$(wc -l < ~/.ssh/authorized_keys)
 echo "  Imported $NKEYS key(s). Enabling sshd via termux-services (runit-supervised)..."
 
-# Enable sshd so runit restarts it if it dies
+# Enable sshd so runit restarts it if it dies (termux-services requires SVDIR;
+# normally set by the profile.d hook which only runs for login shells).
+export SVDIR="$PREFIX/var/service"
 sv-enable sshd 2>/dev/null || rm -f "$PREFIX/var/service/sshd/down"
 
 # Kill any unsupervised sshd started by a previous install
@@ -134,7 +136,7 @@ fi
 # --- Step 6: Install Ubuntu in proot ---
 echo ""
 echo "[6/7] Installing Ubuntu via proot-distro..."
-if proot-distro list --installed 2>/dev/null | grep -q ubuntu; then
+if [ -d "$PREFIX/var/lib/proot-distro/installed-rootfs/ubuntu" ]; then
   echo "  Ubuntu already installed, skipping."
 else
   proot-distro install ubuntu
