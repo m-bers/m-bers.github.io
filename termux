@@ -114,7 +114,7 @@ if [ -d "$TERMUX_BIN" ] && ! grep -q "$TERMUX_BIN" /etc/environment 2>/dev/null;
 fi
 
 # --- Install nvm ---
-echo "[proot 1/8] Installing nvm..."
+echo "[proot 1/9] Installing nvm..."
 if [ -d "$HOME/.nvm" ]; then
   echo "  nvm already installed, skipping."
 else
@@ -126,7 +126,7 @@ export NVM_DIR="$HOME/.nvm"
 
 # --- Install Node ---
 echo ""
-echo "[proot 2/8] Installing Node.js (latest LTS)..."
+echo "[proot 2/9] Installing Node.js (latest LTS)..."
 if command -v node &>/dev/null; then
   echo "  Node $(node --version) already installed, skipping."
 else
@@ -135,18 +135,28 @@ fi
 
 # --- Install Claude Code ---
 echo ""
-echo "[proot 3/8] Installing Claude Code..."
+echo "[proot 3/9] Installing Claude Code..."
 if command -v claude &>/dev/null; then
   echo "  Claude Code already installed, skipping."
 else
   npm install -g @anthropic-ai/claude-code
 fi
 
+# --- Install Playwright CLI + skills ---
+echo ""
+echo "[proot 3.1/9] Installing Playwright CLI..."
+if command -v playwright-cli &>/dev/null; then
+  echo "  Playwright CLI already installed, skipping."
+else
+  npm install -g @playwright/cli@latest
+  playwright-cli install --skills
+fi
+
 # --- Claude Code login (interactive) ---
 echo ""
 if [ -e /dev/tty ]; then
   echo "============================================"
-  echo "[proot 3.5/8] Claude Code login required."
+  echo "[proot 3.5/9] Claude Code login required."
   echo "  This will open a browser or give you a URL."
   echo "============================================"
   echo ""
@@ -154,14 +164,14 @@ if [ -e /dev/tty ]; then
   echo ""
   echo "Claude Code login complete!"
 else
-  echo "[proot 3.5/8] Skipping Claude Code login (no TTY)."
+  echo "[proot 3.5/9] Skipping Claude Code login (no TTY)."
   echo "  Run manually: proot-distro login ubuntu"
   echo "  Then: claude auth login"
 fi
 
 # --- Install PostgreSQL ---
 echo ""
-echo "[proot 4/8] Installing PostgreSQL..."
+echo "[proot 4/9] Installing PostgreSQL..."
 if command -v pg_isready &>/dev/null; then
   echo "  PostgreSQL already installed, skipping."
 else
@@ -186,7 +196,7 @@ fi
 
 # --- Install Bun + pnpm ---
 echo ""
-echo "[proot 5/8] Installing Bun and pnpm..."
+echo "[proot 5/9] Installing Bun and pnpm..."
 if command -v bun &>/dev/null; then
   echo "  Bun already installed."
 else
@@ -208,7 +218,7 @@ fi
 
 # --- Download and install Mobvibe ---
 echo ""
-echo "[proot 6/8] Installing Mobvibe..."
+echo "[proot 6/9] Installing Mobvibe..."
 MOBVIBE_DIR="/opt/mobvibe"
 if [ -d "$MOBVIBE_DIR/gateway/apps" ] && [ -d "$MOBVIBE_DIR/cli/apps" ] && [ -f "$MOBVIBE_DIR/webui/index.html" ]; then
   echo "  Mobvibe already installed, skipping download."
@@ -369,13 +379,13 @@ chmod +x "$MOBVIBE_DIR/start.sh"
 
 # --- Configure Mobvibe CLI ---
 echo ""
-echo "[proot 7/8] Configuring Mobvibe CLI..."
+echo "[proot 7/9] Configuring Mobvibe CLI..."
 mkdir -p ~/.mobvibe
 echo '{"enabledAgents":["claude-acp"]}' > ~/.mobvibe/.config.json
 
 # --- Start services, create user, login CLI ---
 echo ""
-echo "[proot 8/8] Starting Mobvibe and creating default user..."
+echo "[proot 8/9] Starting Mobvibe and creating default user..."
 "$MOBVIBE_DIR/start.sh" &>/dev/null &
 sleep 8
 
