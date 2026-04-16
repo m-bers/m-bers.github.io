@@ -68,8 +68,9 @@ const HTML = `<!DOCTYPE html>
   <h2><span id="s3icon">3.</span> Pair ADB</h2>
   <p>In Wireless debugging settings, tap <b>"Pair device with pairing code"</b>. Enter the info below quickly (it expires):</p>
   <div class="row">
-    <input id="pairIp" placeholder="IP:Port (e.g. 192.168.1.5:37429)">
-    <input id="pairCode" placeholder="Pairing code" style="max-width: 120px;">
+    <input id="pairIp" placeholder="IP (e.g. 192.168.1.5)">
+    <input id="pairPort" placeholder="Port" style="max-width: 80px;">
+    <input id="pairCode" placeholder="Code" style="max-width: 80px;">
   </div>
   <button onclick="doPair()" id="pairBtn">Pair</button>
   <div id="s3status"></div>
@@ -77,8 +78,11 @@ const HTML = `<!DOCTYPE html>
 
 <div class="step" id="step4">
   <h2><span id="s4icon">4.</span> Connect ADB</h2>
-  <p>Enter the <b>IP address &amp; Port</b> shown at the top of the Wireless debugging screen (not the pairing port):</p>
-  <input id="connectAddr" placeholder="IP:Port (e.g. 192.168.1.5:33061)">
+  <p>Enter the <b>Port</b> shown at the top of the Wireless debugging screen (the IP is the same as pairing):</p>
+  <div class="row">
+    <input id="connectIp" placeholder="IP">
+    <input id="connectPort" placeholder="Port" style="max-width: 100px;">
+  </div>
   <button onclick="doConnect()" id="connectBtn">Connect</button>
   <div id="s4status"></div>
 </div>
@@ -143,16 +147,20 @@ async function checkWakelock() {
 
 async function doPair() {
   const ip = document.getElementById("pairIp").value.trim();
+  const port = document.getElementById("pairPort").value.trim();
   const code = document.getElementById("pairCode").value.trim();
-  if (!ip || !code) { setStatus("s3status", "error", "Enter both IP:port and code"); return; }
+  if (!ip || !port || !code) { setStatus("s3status", "error", "Enter IP, port, and code"); return; }
   document.getElementById("pairBtn").disabled = true;
   setStatus("s3status", "pending", "Pairing...");
-  const r = await api("pair", {address: ip, code: code});
+  const r = await api("pair", {address: ip + ":" + port, code: code});
   document.getElementById("pairBtn").disabled = false;
   if (r.success) {
     setStatus("s3status", "ok", "Paired successfully!");
     markDone(3);
     markActive(4);
+    // Auto-fill connect IP
+    document.getElementById("connectIp").value = ip;
+    document.getElementById("connectPort").focus();
     log(r.output);
   } else {
     setStatus("s3status", "error", "Pairing failed: " + (r.output || r.error));
@@ -161,8 +169,10 @@ async function doPair() {
 }
 
 async function doConnect() {
-  const addr = document.getElementById("connectAddr").value.trim();
-  if (!addr) { setStatus("s4status", "error", "Enter the IP:Port"); return; }
+  const ip = document.getElementById("connectIp").value.trim();
+  const port = document.getElementById("connectPort").value.trim();
+  if (!ip || !port) { setStatus("s4status", "error", "Enter IP and port"); return; }
+  const addr = ip + ":" + port;
   document.getElementById("connectBtn").disabled = true;
   setStatus("s4status", "pending", "Connecting...");
   const r = await api("connect", {address: addr});
@@ -201,8 +211,13 @@ async function doFinish() {
   }
 }
 
-// Auto-check wakelock on load
-checkWakelock();
+// Auto-fill local IP
+async function autofillIp() {
+  const r = await api("get-ip");
+  if (r.ip) document.getElementById("pairIp").value = r.ip;
+}
+autofillIp();
+
 markActive(1);
 </script>
 </body>
@@ -236,6 +251,11 @@ const server = http.createServer((req, res) => {
           // Acquire wakelock and report success
           run("termux-wake-lock");
           result = { held: true };
+          break;
+        }
+        case "get-ip": {
+          const r = run("ifconfig 2>/dev/null | grep -oP 'inet \\K[\\d.]+' | grep -v '^127\\.' | head -1");
+          result = { ip: r.success ? r.output : null };
           break;
         }
         case "pair": {
