@@ -149,7 +149,15 @@ if command -v playwright-cli &>/dev/null; then
   echo "  Playwright CLI already installed, skipping."
 else
   npm install -g @playwright/cli@latest
-  playwright-cli install --skills
+fi
+# Install skills from the package (install --skills crashes on Android)
+if [ ! -f "$HOME/.claude/skills/playwright-cli/SKILL.md" ]; then
+  PW_PKG=$(npm root -g)/@playwright/cli
+  if [ -d "$PW_PKG/skills/playwright-cli" ]; then
+    mkdir -p "$HOME/.claude/skills"
+    cp -r "$PW_PKG/skills/playwright-cli" "$HOME/.claude/skills/"
+    echo "  Playwright skills installed."
+  fi
 fi
 
 # --- Claude Code login (interactive) ---
