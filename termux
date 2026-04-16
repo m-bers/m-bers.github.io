@@ -394,8 +394,15 @@ echo '{"enabledAgents":["claude-acp"]}' > ~/.mobvibe/.config.json
 # --- Start services, create user, login CLI ---
 echo ""
 echo "[proot 8/9] Starting Mobvibe and creating default user..."
+set +e  # Disable exit-on-error for service startup
 "$MOBVIBE_DIR/start.sh" &>/dev/null &
-sleep 8
+sleep 12
+# Wait for gateway to be ready
+for i in 1 2 3 4 5; do
+  curl -s http://localhost:3005 >/dev/null 2>&1 && break
+  echo "  Waiting for gateway..."
+  sleep 5
+done
 
 # Create default user
 curl -s -X POST http://localhost:3005/api/auth/sign-up/email \
@@ -410,7 +417,7 @@ send \"admin@mobvibe.local\r\"
 expect \"Password:\"
 send \"admin123\r\"
 expect eof
-" 2>/dev/null
+" 2>/dev/null || echo "  CLI login failed — run manually later"
 
 # Get E2EE secret and create auto-login page
 E2EE_SECRET=$(cat ~/.mobvibe/credentials.json 2>/dev/null | grep masterSecret | sed 's/.*"masterSecret": *"\([^"]*\)".*/\1/')
