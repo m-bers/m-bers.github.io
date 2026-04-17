@@ -661,8 +661,16 @@ if [ ! -f "$HOME/.termux-setup-done" ]; then
   until [ -f "$HOME/.termux-setup-done" ]; do sleep 2; done
   echo "Wizard complete."
 
-  # Reconnect ADB from Termux (the wizard connected inside proot, but the
-  # proot adb server may be orphaned on exit).
+  # The wizard runs adb pair/connect inside proot, which stores the adb key
+  # at /root/.android/adbkey (proot rootfs). Termux's adb uses a different
+  # key at ~/.android/adbkey. Copy proot's key so Termux's adb is authorized.
+  ROOTFS="$PREFIX/var/lib/proot-distro/installed-rootfs/ubuntu"
+  if [ -f "$ROOTFS/root/.android/adbkey" ]; then
+    mkdir -p ~/.android
+    cp "$ROOTFS/root/.android/adbkey" "$ROOTFS/root/.android/adbkey.pub" ~/.android/ 2>/dev/null
+  fi
+
+  # Reconnect ADB from Termux with the correct key.
   if [ -f "$HOME/.adb-connect-addr" ]; then
     echo "Reconnecting ADB from Termux..."
     adb kill-server &>/dev/null || true
