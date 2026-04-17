@@ -98,8 +98,9 @@ fi
   adb shell settings put global settings_enable_monitor_phantom_procs false &>/dev/null || true
 ) &
 
-# 5. Start Mobvibe inside proot (supervisord takes over from there).
-proot-distro login ubuntu -- /bin/bash -c "source ~/.nvm/nvm.sh && /opt/mobvibe/start.sh &>/dev/null &"
+# 5. Start Mobvibe inside proot via tmux (proot kills backgrounded children
+# when its session exits, so tmux keeps the proot session alive).
+tmux new-session -d -s mobvibe "proot-distro login ubuntu -- /bin/bash -lc 'source ~/.nvm/nvm.sh; export BUN_INSTALL=\$HOME/.bun; export PATH=\$BUN_INSTALL/bin:\$PATH; exec /opt/mobvibe/start.sh'" 2>/dev/null || true
 BOOT
   chmod +x ~/.termux/boot/start-all.sh
   # Remove the old per-service boot script if upgrading from an older install
@@ -575,8 +576,9 @@ if [ -f "$HOME/.adb-connect-addr" ] && ! adb devices 2>/dev/null | grep -q "devi
 fi
 
 # Auto-start Mobvibe inside proot if the gateway isn't already responding.
+# Must run in tmux — proot kills backgrounded children when its session exits.
 if command -v proot-distro &>/dev/null && ! curl -s --max-time 2 http://localhost:8080 &>/dev/null; then
-  proot-distro login ubuntu -- /bin/bash -c 'source ~/.nvm/nvm.sh 2>/dev/null; export BUN_INSTALL=$HOME/.bun; export PATH=$BUN_INSTALL/bin:$PATH; /opt/mobvibe/start.sh &>/dev/null &'
+  tmux new-session -d -s mobvibe "proot-distro login ubuntu -- /bin/bash -lc 'source ~/.nvm/nvm.sh; export BUN_INSTALL=\$HOME/.bun; export PATH=\$BUN_INSTALL/bin:\$PATH; exec /opt/mobvibe/start.sh'" 2>/dev/null || true
 fi
 
 # First-run setup wizard (wakelock + ADB wireless debugging + battery opt + phantom killer).
@@ -594,8 +596,11 @@ echo "  All done!"
 echo ""
 echo "  Open http://localhost:8080/auto-login.html"
 echo "  in your phone's browser."
-echo ""
-echo "  On next Termux launch, a setup wizard"
-echo "  will guide you through wakelock and"
-echo "  ADB wireless debugging setup."
 echo "============================================"
+
+# Run setup wizard immediately (don't wait for next shell).
+if [ ! -f "$HOME/.termux-setup-done" ]; then
+  echo ""
+  echo "Launching setup wizard..."
+  proot-distro login ubuntu -- bash /opt/termux-setup-wizard.sh
+fi
