@@ -324,10 +324,16 @@ server.listen(PORT, "0.0.0.0", () => console.log("HTTP proxy on http://localhost
   const nodeVersion = path.basename(path.dirname(path.dirname(nodeBin)));
   const bunBin = "/root/.bun/bin/bun";
 
-  const supervisordConf = `[supervisord]
+  const supervisordConf = `[unix_http_server]
+file=/opt/mobvibe/supervisor.sock
+
+[supervisord]
 nodaemon=true
 logfile=/opt/mobvibe/supervisord.log
 pidfile=/opt/mobvibe/supervisord.pid
+
+[supervisorctl]
+serverurl=unix:///opt/mobvibe/supervisor.sock
 
 [program:postgres]
 command=/usr/lib/postgresql/${pgVersion}/bin/postgres -D /var/lib/postgresql/${pgVersion}/main
@@ -491,6 +497,26 @@ expect eof
 </body>
 </html>`;
   fs.writeFileSync(`${ROOTFS}/opt/mobvibe/webui/auto-login.html`, autoLoginHtml);
+
+  // Restart supervisord so cli-daemon picks up the new credentials.
+  // It entered FATAL state before credentials existed (step 9).
+  log(10, "Restarting services with new credentials...");
+  try { execSync("tmux kill-session -t mobvibe 2>/dev/null", { env: termuxEnv() }); } catch {}
+  await new Promise(r => setTimeout(r, 2000));
+  await runTermux(10, `tmux new-session -d -s mobvibe "proot-distro login ubuntu -- /bin/bash -lc 'source ~/.nvm/nvm.sh; export BUN_INSTALL=\\$HOME/.bun; export PATH=\\$BUN_INSTALL/bin:\\$PATH; exec /opt/mobvibe/start.sh'"`);
+  // Wait for cli-daemon to be running
+  log(10, "Waiting for cli-daemon to register...");
+  for (let i = 0; i < 12; i++) {
+    await new Promise(r => setTimeout(r, 5000));
+    try {
+      const tmuxOut = execSync("tmux capture-pane -t mobvibe -p -S -20 2>/dev/null", { env: termuxEnv(), encoding: "utf8" });
+      if (tmuxOut.includes("cli-daemon entered RUNNING")) {
+        log(10, "cli-daemon is running.");
+        break;
+      }
+    } catch {}
+    log(10, `Waiting... (${(i + 1) * 5}s)`);
+  }
   log(10, "E2EE setup complete.");
 }
 
@@ -509,14 +535,12 @@ async function step11connect(ip, port) {
   fs.writeFileSync(`${TERMUX_HOME}/.adb-connect-addr`, `${ip}:${port}`);
   log(11, `Connected. Address saved to .adb-connect-addr`);
 
-  // Copy proot adb key to Termux so Termux's adb can connect
-  log(11, "Copying proot ADB keys to Termux...");
+  // Sync ADB keys between Termux and proot so both can connect.
+  // Pairing was done from Termux, so keys are at $TERMUX_HOME/.android/.
+  // Copy to proot rootfs so proot's adb can also use them.
   try {
-    execSync(`mkdir -p "${TERMUX_HOME}/.android" && cp "${ROOTFS}/root/.android/adbkey" "${ROOTFS}/root/.android/adbkey.pub" "${TERMUX_HOME}/.android/" 2>/dev/null`, { env: termuxEnv() });
-    log(11, "ADB keys copied.");
-  } catch {
-    log(11, "Note: Could not copy ADB keys (may not exist yet).");
-  }
+    execSync(`mkdir -p "${ROOTFS}/root/.android" && cp "${TERMUX_HOME}/.android/adbkey" "${TERMUX_HOME}/.android/adbkey.pub" "${ROOTFS}/root/.android/" 2>/dev/null`, { env: termuxEnv() });
+  } catch {}
 }
 
 async function step12() {
