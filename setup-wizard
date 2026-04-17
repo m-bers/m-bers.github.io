@@ -1,449 +1,1076 @@
 #!/bin/bash
-# First-run setup wizard — runs inside proot
-# Serves a web UI that guides through wakelock + ADB wireless debugging setup
+# Setup Wizard — serves a web UI on port 8888 that orchestrates the full install.
+# Runs in Termux (not inside proot). Creates a Node.js server via heredoc.
+
+set -e
 
 WIZARD_PORT=8888
-WIZARD_DIR="/opt/termux-setup-wizard"
+WIZARD_DIR="/tmp/setup-wizard-app"
+PREFIX="/data/data/com.termux/files/usr"
+TERMUX_HOME="/data/data/com.termux/files/home"
+ROOTFS="$PREFIX/var/lib/proot-distro/installed-rootfs/ubuntu"
 
 mkdir -p "$WIZARD_DIR"
 
-export NVM_DIR="$HOME/.nvm"
-[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
-
-# Create the backend + frontend as a single Node script
 cat > "$WIZARD_DIR/server.mjs" <<'SERVERJS'
 import http from "http";
-import { execSync, exec } from "child_process";
+import { execSync, spawn } from "child_process";
 import fs from "fs";
+import path from "path";
 
-const PORT = parseInt(process.env.WIZARD_PORT || "8888");
+const PORT = 8888;
+const PREFIX = "/data/data/com.termux/files/usr";
+const TERMUX_HOME = "/data/data/com.termux/files/home";
+const ROOTFS = `${PREFIX}/var/lib/proot-distro/installed-rootfs/ubuntu`;
+const GITHUB_USER = "m-bers";
+const GITHUB_REPO = "m-bers/m-bers.github.io";
+const MOBVIBE_EMAIL = "admin@mobvibe.local";
+const MOBVIBE_PASS = "admin123";
 
+// ---------------------------------------------------------------------------
+// SSE clients
+// ---------------------------------------------------------------------------
+const sseClients = new Set();
+function broadcast(data) {
+  const msg = `data: ${JSON.stringify(data)}\n\n`;
+  for (const res of sseClients) {
+    try { res.write(msg); } catch {}
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Step state
+// ---------------------------------------------------------------------------
+const STEPS = [
+  { id: 1,  name: "Acquire Wakelock",           auto: true,  context: "termux" },
+  { id: 2,  name: "Install Termux Packages",    auto: true,  context: "termux" },
+  { id: 3,  name: "Install Ubuntu",             auto: true,  context: "termux" },
+  { id: 4,  name: "Install Node.js (proot)",    auto: true,  context: "proot" },
+  { id: 5,  name: "Install Claude Code",        auto: true,  context: "proot" },
+  { id: 6,  name: "Claude Code Login",          auto: false, context: "proot" },
+  { id: 7,  name: "Install Dev Tools",          auto: true,  context: "proot" },
+  { id: 8,  name: "Install Mobvibe",            auto: true,  context: "proot" },
+  { id: 9,  name: "Start Services",             auto: true,  context: "termux" },
+  { id: 10, name: "Create User & E2EE Setup",   auto: true,  context: "proot" },
+  { id: 11, name: "ADB Wireless Debugging",     auto: false, context: "termux" },
+  { id: 12, name: "Phantom Killer & Battery",   auto: true,  context: "termux" },
+  { id: 13, name: "Verify E2EE",                auto: true,  context: "termux" },
+  { id: 14, name: "Complete",                   auto: true,  context: "termux" },
+];
+
+const state = {};
+for (const s of STEPS) {
+  state[s.id] = { status: "pending", log: [] };
+}
+let currentStep = 0;
+
+function log(step, line) {
+  const s = state[step];
+  if (!s) return;
+  s.log.push(line);
+  if (s.log.length > 200) s.log.shift();
+  broadcast({ step, status: s.status, log: line });
+}
+
+function setStatus(step, status) {
+  state[step].status = status;
+  broadcast({ step, status, log: "" });
+}
+
+// ---------------------------------------------------------------------------
+// Command helpers
+// ---------------------------------------------------------------------------
+function termuxEnv() {
+  return { ...process.env, PREFIX, HOME: TERMUX_HOME, PATH: `${PREFIX}/bin:${PREFIX}/sbin:${process.env.PATH}` };
+}
+
+function runTermux(step, cmd) {
+  return new Promise((resolve, reject) => {
+    const child = spawn("bash", ["-c", cmd], { env: termuxEnv() });
+    child.stdout.on("data", d => d.toString().split("\n").forEach(l => { if (l) log(step, l); }));
+    child.stderr.on("data", d => d.toString().split("\n").forEach(l => { if (l) log(step, l); }));
+    child.on("close", code => code === 0 ? resolve() : reject(new Error(`Exit code ${code}`)));
+  });
+}
+
+function runProot(step, cmd) {
+  const wrapped = `proot-distro login ubuntu -- bash -lc '${cmd.replace(/'/g, "'\\''")}'`;
+  return runTermux(step, wrapped);
+}
+
+function runProotRaw(step, shellCmd) {
+  // For cases where we need the raw bash -c form (no login shell)
+  const wrapped = `proot-distro login ubuntu -- bash -c '${shellCmd.replace(/'/g, "'\\''")}'`;
+  return runTermux(step, wrapped);
+}
+
+// ---------------------------------------------------------------------------
+// Step implementations
+// ---------------------------------------------------------------------------
+async function step1() {
+  log(1, "Acquiring wakelock...");
+  try { execSync("termux-wake-lock", { env: termuxEnv() }); } catch {}
+  log(1, "Wakelock acquired.");
+}
+
+async function step2() {
+  log(2, "Installing proot-distro, android-tools, termux-services, tmux...");
+  await runTermux(2, 'pkg install -y proot-distro android-tools termux-services tmux');
+  log(2, "Setting up sshd supervision...");
+  await runTermux(2, `export SVDIR="${PREFIX}/var/service"; sv-enable sshd 2>/dev/null || rm -f "${PREFIX}/var/service/sshd/down"; pkill -x sshd 2>/dev/null || true; if ! pgrep -x runsvdir >/dev/null 2>&1; then nohup runsvdir -P "${PREFIX}/var/service" </dev/null &>/dev/null & disown 2>/dev/null || true; fi`);
+  log(2, "sshd supervised.");
+}
+
+async function step3() {
+  if (fs.existsSync(ROOTFS)) {
+    log(3, "Ubuntu already installed, skipping.");
+    return;
+  }
+  log(3, "Installing Ubuntu via proot-distro (this takes a few minutes)...");
+  await runTermux(3, "proot-distro install ubuntu");
+  log(3, "Ubuntu installed.");
+}
+
+async function step4() {
+  log(4, "Installing nvm...");
+  await runProot(4, 'if [ -d "$HOME/.nvm" ]; then echo "nvm already installed"; else curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash; fi');
+  log(4, "Installing Node.js LTS...");
+  await runProot(4, 'source /root/.nvm/nvm.sh && if nvm ls --no-colors 2>/dev/null | grep -q "v[0-9]"; then echo "Node $(node --version) already installed"; else nvm install --lts; fi');
+  log(4, "Node.js installed.");
+}
+
+async function step5() {
+  log(5, "Installing Claude Code...");
+  await runProot(5, 'source /root/.nvm/nvm.sh && if command -v claude &>/dev/null; then echo "Claude Code already installed"; else npm install -g @anthropic-ai/claude-code; fi');
+  log(5, "Claude Code installed.");
+}
+
+// Step 6 — Claude Code Login (interactive)
+let claudeLoginProc = null;
+let claudeOAuthUrl = null;
+
+async function step6start() {
+  log(6, "Starting Claude Code auth login...");
+  claudeOAuthUrl = null;
+
+  return new Promise((resolve) => {
+    const child = spawn("bash", ["-c",
+      `script -qc "proot-distro login ubuntu -- bash -lc 'source /root/.nvm/nvm.sh && claude auth login'" /dev/null`
+    ], { env: termuxEnv() });
+
+    claudeLoginProc = child;
+
+    child.stdout.on("data", (data) => {
+      const text = data.toString();
+      text.split("\n").forEach(line => {
+        if (line.trim()) log(6, line.trim());
+      });
+      // Look for OAuth URL
+      const urlMatch = text.match(/(https:\/\/claude\.(?:ai|com)[^\s]*|https:\/\/console\.anthropic\.com[^\s]*)/);
+      if (urlMatch && !claudeOAuthUrl) {
+        claudeOAuthUrl = urlMatch[1];
+        broadcast({ step: 6, status: "waiting", log: "", oauthUrl: claudeOAuthUrl });
+      }
+    });
+
+    child.stderr.on("data", (data) => {
+      data.toString().split("\n").forEach(l => { if (l.trim()) log(6, l.trim()); });
+    });
+
+    child.on("close", () => {
+      claudeLoginProc = null;
+      resolve();
+    });
+
+    // Poll for credentials file
+    const poll = setInterval(() => {
+      const credPath = `${ROOTFS}/root/.claude/.credentials.json`;
+      if (fs.existsSync(credPath)) {
+        clearInterval(poll);
+        log(6, "Credentials detected! Login complete.");
+        if (claudeLoginProc) {
+          try { claudeLoginProc.kill(); } catch {}
+          claudeLoginProc = null;
+        }
+        resolve();
+      }
+    }, 2000);
+
+    // Timeout after 10 minutes
+    setTimeout(() => {
+      clearInterval(poll);
+      if (claudeLoginProc) {
+        try { claudeLoginProc.kill(); } catch {}
+        claudeLoginProc = null;
+      }
+      resolve();
+    }, 600000);
+  });
+}
+
+async function step7() {
+  log(7, "Installing Playwright CLI...");
+  await runProot(7, 'source /root/.nvm/nvm.sh && if command -v playwright-cli &>/dev/null; then echo "Playwright CLI already installed"; else npm install -g @playwright/cli@latest; fi');
+  log(7, "Installing Playwright skills...");
+  await runProot(7, 'source /root/.nvm/nvm.sh && PW_PKG=$(npm root -g)/@playwright/cli && if [ -d "$PW_PKG/skills/playwright-cli" ] && [ ! -f "$HOME/.claude/skills/playwright-cli/SKILL.md" ]; then mkdir -p "$HOME/.claude/skills" && cp -r "$PW_PKG/skills/playwright-cli" "$HOME/.claude/skills/" && echo "Skills installed"; else echo "Skills already present or package not found"; fi');
+  log(7, "Installing PostgreSQL, Bun, pnpm, expect, supervisor...");
+  await runProot(7, 'DEBIAN_FRONTEND=noninteractive apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq postgresql postgresql-client expect supervisor >/dev/null 2>&1 && echo "APT packages installed"');
+  log(7, "Installing Bun...");
+  await runProot(7, 'if [ -f "$HOME/.bun/bin/bun" ]; then echo "Bun already installed"; else curl -fsSL https://bun.sh/install | bash; fi');
+  log(7, "Installing pnpm...");
+  await runProot(7, 'source /root/.nvm/nvm.sh && if command -v pnpm &>/dev/null; then echo "pnpm already installed"; else npm install -g pnpm; fi');
+  log(7, "Dev tools installed.");
+}
+
+async function step8() {
+  log(8, "Installing Mobvibe...");
+
+  // Check if already installed
+  try {
+    const check = execSync(`ls ${ROOTFS}/opt/mobvibe/gateway/apps ${ROOTFS}/opt/mobvibe/cli/apps ${ROOTFS}/opt/mobvibe/webui/index.html 2>/dev/null`, { encoding: "utf8" });
+    if (check) {
+      log(8, "Mobvibe already installed, regenerating config files...");
+    }
+  } catch {
+    log(8, "Downloading Mobvibe from GitHub releases...");
+    await runProot(8, `
+mkdir -p /opt/mobvibe/{gateway,webui,cli}
+RELEASE_URLS=$(curl -fsSL "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" | grep browser_download_url)
+GATEWAY_URL=$(echo "$RELEASE_URLS" | grep gateway | sed 's/.*"\\(http[^"]*\\)".*/\\1/')
+WEBUI_URL=$(echo "$RELEASE_URLS" | grep webui | sed 's/.*"\\(http[^"]*\\)".*/\\1/')
+CLI_URL=$(echo "$RELEASE_URLS" | grep 'cli\\.tar' | sed 's/.*"\\(http[^"]*\\)".*/\\1/')
+echo "Downloading gateway..." && curl -fsSL "$GATEWAY_URL" | tar xz -C /opt/mobvibe/gateway
+echo "Downloading WebUI..." && curl -fsSL "$WEBUI_URL" | tar xz -C /opt/mobvibe/webui
+echo "Configuring WebUI gateway URL..." && find /opt/mobvibe/webui -name "*.js" -exec sed -i 's|__MOBVIBE_GATEWAY_URL__|http://localhost:8080|g' {} + 2>/dev/null
+echo "Downloading CLI..." && curl -fsSL "$CLI_URL" | tar xz -C /opt/mobvibe/cli
+`);
+    log(8, "Installing gateway dependencies...");
+    await runProot(8, 'source /root/.nvm/nvm.sh && cd /opt/mobvibe/gateway && pnpm install --frozen-lockfile 2>/dev/null || pnpm install');
+    log(8, "Installing CLI dependencies...");
+    await runProot(8, 'source /root/.nvm/nvm.sh && cd /opt/mobvibe/cli && pnpm install --frozen-lockfile 2>/dev/null || pnpm install');
+  }
+
+  // Generate auth secret
+  await runProotRaw(8, 'test -f /opt/mobvibe/.auth-secret || openssl rand -hex 32 > /opt/mobvibe/.auth-secret');
+
+  // Write proxy.js
+  log(8, "Writing proxy.js...");
+  const proxyJs = `const http = require("http");
+const fs = require("fs");
+const path = require("path");
+const WEBUI = "/opt/mobvibe/webui";
+const PORT = 8080;
+const MIME = {
+  ".html":"text/html",".js":"application/javascript",".css":"text/css",
+  ".json":"application/json",".svg":"image/svg+xml",".png":"image/png",
+  ".wasm":"application/wasm",".ico":"image/x-icon",".apk":"application/vnd.android.package-archive"
+};
+function serveStatic(req, res) {
+  let fp = path.join(WEBUI, req.url.split("?")[0]);
+  if (fp.endsWith("/")) fp += "index.html";
+  fs.stat(fp, (err, st) => {
+    if (err || !st.isFile()) fp = path.join(WEBUI, "index.html");
+    const ext = path.extname(fp);
+    res.writeHead(200, {"Content-Type": MIME[ext] || "application/octet-stream"});
+    fs.createReadStream(fp).pipe(res);
+  });
+}
+function shouldServeStatic(url) {
+  const p = url.split("?")[0];
+  if (p === "/") return true;
+  if (p.startsWith("/assets/")) return true;
+  const ext = path.extname(p);
+  return ext && MIME[ext];
+}
+function handler(req, res) {
+  if (shouldServeStatic(req.url)) { serveStatic(req, res); }
+  else {
+    const opts = {hostname:"127.0.0.1",port:3005,path:req.url,method:req.method,headers:{...req.headers,host:"localhost:3005"}};
+    const proxy = http.request(opts, (pRes) => { res.writeHead(pRes.statusCode, pRes.headers); pRes.pipe(res); });
+    proxy.on("error", () => serveStatic(req, res));
+    req.pipe(proxy);
+  }
+}
+const server = http.createServer(handler);
+server.on("upgrade", (req, socket, head) => {
+  const opts = {hostname:"127.0.0.1",port:3005,path:req.url,method:"GET",headers:{...req.headers,host:"localhost:3005"}};
+  const proxy = http.request(opts);
+  proxy.on("upgrade", (pRes, pSocket, pHead) => {
+    socket.write("HTTP/1.1 101 Switching Protocols\\r\\n" + Object.entries(pRes.headers).map(([k,v])=>k+": "+v).join("\\r\\n") + "\\r\\n\\r\\n");
+    if (pHead.length) socket.write(pHead);
+    pSocket.on("error", () => socket.end()); socket.on("error", () => pSocket.end());
+    pSocket.pipe(socket); socket.pipe(pSocket);
+  });
+  proxy.on("error", () => socket.end()); socket.on("error", () => {}); proxy.end();
+});
+process.on("uncaughtException", (err) => { if (err.code === "ECONNRESET" || err.code === "EPIPE") return; console.error("Uncaught:", err); });
+server.listen(PORT, "0.0.0.0", () => console.log("HTTP proxy on http://localhost:"+PORT));
+`;
+  fs.writeFileSync(`${ROOTFS}/opt/mobvibe/proxy.js`, proxyJs);
+
+  // Write supervisord.conf
+  log(8, "Writing supervisord.conf...");
+  let pgVersion = "17";
+  try { pgVersion = fs.readdirSync(`${ROOTFS}/usr/lib/postgresql`)[0] || "17"; } catch {}
+  let nodeBin = "/root/.nvm/versions/node/v22.0.0/bin/node";
+  try {
+    const nvmDir = `${ROOTFS}/root/.nvm/versions/node`;
+    const versions = fs.readdirSync(nvmDir).sort();
+    if (versions.length > 0) {
+      const ver = versions[versions.length - 1];
+      nodeBin = `/root/.nvm/versions/node/${ver}/bin/node`;
+    }
+  } catch {}
+  const nodeVersion = path.basename(path.dirname(path.dirname(nodeBin)));
+  const bunBin = "/root/.bun/bin/bun";
+
+  const supervisordConf = `[supervisord]
+nodaemon=true
+logfile=/opt/mobvibe/supervisord.log
+pidfile=/opt/mobvibe/supervisord.pid
+
+[program:postgres]
+command=/usr/lib/postgresql/${pgVersion}/bin/postgres -D /var/lib/postgresql/${pgVersion}/main
+user=postgres
+autorestart=true
+stdout_logfile=/opt/mobvibe/postgres.log
+stderr_logfile=/opt/mobvibe/postgres.err
+priority=1
+
+[program:gateway]
+command=${nodeBin} dist/index.js
+directory=/opt/mobvibe/gateway/apps/gateway
+environment=NODE_ENV=development,DATABASE_URL="postgresql://postgres@localhost:5432/mobvibe",BETTER_AUTH_SECRET="%(ENV_BETTER_AUTH_SECRET)s",SKIP_EMAIL_VERIFICATION=true,PORT=3005,GATEWAY_CORS_ORIGINS="http://localhost:8080"
+autorestart=true
+stdout_logfile=/opt/mobvibe/gateway.log
+stderr_logfile=/opt/mobvibe/gateway.err
+priority=2
+startsecs=5
+
+[program:proxy]
+command=${nodeBin} /opt/mobvibe/proxy.js
+autorestart=true
+stdout_logfile=/opt/mobvibe/proxy.log
+stderr_logfile=/opt/mobvibe/proxy.err
+priority=3
+startsecs=2
+
+[program:cli-daemon]
+command=${bunBin} apps/mobvibe-cli/dist/index.js start --foreground
+directory=/opt/mobvibe/cli
+environment=MOBVIBE_GATEWAY_URL="http://localhost:3005",HOME="/root",PATH="/root/.bun/bin:/root/.nvm/versions/node/${nodeVersion}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+autorestart=true
+stdout_logfile=/opt/mobvibe/cli.log
+stderr_logfile=/opt/mobvibe/cli.err
+priority=4
+startsecs=10
+`;
+  fs.writeFileSync(`${ROOTFS}/opt/mobvibe/supervisord.conf`, supervisordConf);
+
+  // Write start.sh
+  log(8, "Writing start.sh...");
+  const startSh = `#!/bin/bash
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && \\. "$NVM_DIR/nvm.sh"
+export BUN_INSTALL="$HOME/.bun"
+export PATH="$BUN_INSTALL/bin:$PATH"
+PG_VERSION=$(ls /usr/lib/postgresql/ 2>/dev/null | head -1)
+PG_DATA="/var/lib/postgresql/$PG_VERSION/main"
+if [ ! -d "$PG_DATA/base" ]; then
+  chown -R postgres:postgres /var/lib/postgresql/
+  su - postgres -c "/usr/lib/postgresql/$PG_VERSION/bin/initdb -D $PG_DATA" 2>/dev/null
+fi
+export DATABASE_URL="postgresql://postgres@localhost:5432/mobvibe"
+su - postgres -c "/usr/lib/postgresql/$PG_VERSION/bin/pg_ctl -D $PG_DATA -l $PG_DATA/logfile start" 2>/dev/null || true
+sleep 2
+su - postgres -c "psql -tc \\"SELECT 1 FROM pg_database WHERE datname='mobvibe'\\" | grep -q 1 || psql -c 'CREATE DATABASE mobvibe;'" 2>/dev/null
+cd /opt/mobvibe/gateway/apps/gateway
+npx drizzle-kit migrate 2>/dev/null || true
+su - postgres -c "/usr/lib/postgresql/$PG_VERSION/bin/pg_ctl -D $PG_DATA stop" 2>/dev/null
+export BETTER_AUTH_SECRET="$(cat /opt/mobvibe/.auth-secret 2>/dev/null)"
+echo "Starting all services via supervisord..."
+exec supervisord -c /opt/mobvibe/supervisord.conf
+`;
+  fs.writeFileSync(`${ROOTFS}/opt/mobvibe/start.sh`, startSh, { mode: 0o755 });
+
+  // Configure Mobvibe CLI
+  try { fs.mkdirSync(`${ROOTFS}/root/.mobvibe`, { recursive: true }); } catch {}
+  fs.writeFileSync(`${ROOTFS}/root/.mobvibe/.config.json`, '{"enabledAgents":["claude-acp"]}');
+
+  log(8, "Mobvibe installed and configured.");
+}
+
+async function step9() {
+  log(9, "Starting Mobvibe in tmux...");
+  try { execSync("tmux kill-session -t mobvibe 2>/dev/null", { env: termuxEnv() }); } catch {}
+  await runTermux(9, `tmux new-session -d -s mobvibe "proot-distro login ubuntu -- /bin/bash -lc 'source ~/.nvm/nvm.sh; export BUN_INSTALL=\\$HOME/.bun; export PATH=\\$BUN_INSTALL/bin:\\$PATH; exec /opt/mobvibe/start.sh'"`);
+  log(9, "Waiting for gateway on port 3005 (up to 90s)...");
+  for (let i = 0; i < 18; i++) {
+    try {
+      execSync("curl -s --max-time 2 http://localhost:3005 >/dev/null 2>&1", { env: termuxEnv() });
+      log(9, "Gateway is up!");
+      return;
+    } catch {}
+    await new Promise(r => setTimeout(r, 5000));
+    log(9, `Still waiting... (${(i + 1) * 5}s)`);
+  }
+  log(9, "WARNING: Gateway may not be fully up yet. Continuing...");
+}
+
+async function step10() {
+  log(10, "Creating default user...");
+  try {
+    execSync(`curl -s -X POST http://localhost:3005/api/auth/sign-up/email -H "Content-Type: application/json" -d '{"email":"${MOBVIBE_EMAIL}","password":"${MOBVIBE_PASS}","name":"Admin"}'`, { env: termuxEnv() });
+  } catch {}
+  log(10, "User created. Logging in CLI for E2EE device registration...");
+
+  // Run expect inside proot for CLI login
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    await runProot(10, `source /root/.nvm/nvm.sh && export BUN_INSTALL=/root/.bun && export PATH=$BUN_INSTALL/bin:$PATH && expect -c "
+spawn env MOBVIBE_GATEWAY_URL=http://localhost:3005 bun /opt/mobvibe/cli/apps/mobvibe-cli/dist/index.js login
+expect \\"Email:\\"
+send \\"${MOBVIBE_EMAIL}\\r\\"
+expect \\"Password:\\"
+send \\"${MOBVIBE_PASS}\\r\\"
+expect eof
+"`);
+    try {
+      const creds = fs.readFileSync(`${ROOTFS}/root/.mobvibe/credentials.json`, "utf8");
+      if (creds.includes("masterSecret")) {
+        log(10, "CLI login + device registration complete.");
+        break;
+      }
+    } catch {}
+    log(10, `CLI login attempt ${attempt} failed, retrying...`);
+    await new Promise(r => setTimeout(r, 3000));
+  }
+
+  // Extract masterSecret
+  let e2eeSecret = "";
+  try {
+    const creds = JSON.parse(fs.readFileSync(`${ROOTFS}/root/.mobvibe/credentials.json`, "utf8"));
+    e2eeSecret = creds.masterSecret || "";
+  } catch {}
+
+  if (!e2eeSecret) {
+    log(10, "WARNING: No E2EE master secret found.");
+  }
+
+  // Generate auto-login.html - CRITICAL: clear old localStorage before setting new
+  log(10, "Generating auto-login.html...");
+  const autoLoginHtml = `<!DOCTYPE html>
+<html>
+<head><title>Logging in...</title></head>
+<body>
+<p>Logging in...</p>
+<script>
+(async () => {
+  try {
+    var secret = "${e2eeSecret}";
+    if (secret) {
+      localStorage.removeItem("mobvibe_e2ee_master_secret");
+      localStorage.removeItem("mobvibe_e2ee_secrets");
+      localStorage.setItem("mobvibe_e2ee_master_secret", secret);
+      localStorage.setItem("mobvibe_e2ee_secrets", JSON.stringify([
+        { secret: secret, fingerprint: "setup", addedAt: Date.now() }
+      ]));
+    }
+    const res = await fetch("/api/auth/sign-in/email", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      credentials: "include",
+      body: JSON.stringify({email: "${MOBVIBE_EMAIL}", password: "${MOBVIBE_PASS}"})
+    });
+    if (res.ok) window.location.href = "/";
+    else document.body.innerHTML = "<p>Login failed: " + res.status + "</p>";
+  } catch(e) {
+    document.body.innerHTML = "<p>Error: " + e.message + "</p>";
+  }
+})();
+</script>
+</body>
+</html>`;
+  fs.writeFileSync(`${ROOTFS}/opt/mobvibe/webui/auto-login.html`, autoLoginHtml);
+  log(10, "E2EE setup complete.");
+}
+
+// Step 11 — ADB (interactive)
+async function step11pair(ip, port, code) {
+  log(11, `Pairing with ${ip}:${port}...`);
+  const cmd = `echo '${code}' | adb pair ${ip}:${port}`;
+  await runTermux(11, cmd);
+  log(11, "Pairing complete.");
+}
+
+async function step11connect(ip, port) {
+  log(11, `Connecting to ${ip}:${port}...`);
+  await runTermux(11, `adb connect ${ip}:${port}`);
+  // Save address
+  fs.writeFileSync(`${TERMUX_HOME}/.adb-connect-addr`, `${ip}:${port}`);
+  log(11, `Connected. Address saved to .adb-connect-addr`);
+
+  // Copy proot adb key to Termux so Termux's adb can connect
+  log(11, "Copying proot ADB keys to Termux...");
+  try {
+    execSync(`mkdir -p "${TERMUX_HOME}/.android" && cp "${ROOTFS}/root/.android/adbkey" "${ROOTFS}/root/.android/adbkey.pub" "${TERMUX_HOME}/.android/" 2>/dev/null`, { env: termuxEnv() });
+    log(11, "ADB keys copied.");
+  } catch {
+    log(11, "Note: Could not copy ADB keys (may not exist yet).");
+  }
+}
+
+async function step12() {
+  log(12, "Disabling phantom process killer...");
+  const cmds = [
+    "adb shell /system/bin/device_config set_sync_disabled_for_tests persistent",
+    "adb shell /system/bin/device_config put activity_manager max_phantom_processes 2147483647",
+    "adb shell settings put global settings_enable_monitor_phantom_procs false",
+  ];
+  for (const cmd of cmds) {
+    try {
+      await runTermux(12, cmd);
+    } catch (e) {
+      log(12, `Warning: ${cmd} failed (${e.message})`);
+    }
+  }
+  log(12, "Opening battery optimization settings...");
+  try {
+    await runTermux(12, "adb shell am start -a android.settings.IGNORE_BATTERY_OPTIMIZATION_SETTINGS");
+  } catch {
+    log(12, "Could not open battery settings (ADB may not be connected).");
+  }
+  log(12, "Phantom killer disabled, battery settings opened.");
+}
+
+async function step13() {
+  log(13, "Setting up CDP forward...");
+  try {
+    await runTermux(13, "adb forward tcp:9222 localabstract:chrome_devtools_remote");
+    log(13, "CDP forward set up.");
+  } catch {
+    log(13, "CDP forward failed (ADB may not be connected). Skipping.");
+  }
+
+  log(13, "Opening auto-login page in browser...");
+  try {
+    execSync("termux-open-url http://localhost:8080/auto-login.html", { env: termuxEnv() });
+  } catch {}
+
+  // Quick verify
+  await new Promise(r => setTimeout(r, 3000));
+  try {
+    execSync("curl -s --max-time 5 http://localhost:8080/auto-login.html >/dev/null", { env: termuxEnv() });
+    log(13, "Auto-login page accessible.");
+  } catch {
+    log(13, "Warning: Could not verify auto-login page.");
+  }
+
+  fs.writeFileSync(`${TERMUX_HOME}/.termux-setup-done`, new Date().toISOString());
+  log(13, "E2EE verification complete. Setup marker written.");
+}
+
+async function step14() {
+  log(14, "Writing .bashrc auto-start block...");
+  const bashrcPath = `${TERMUX_HOME}/.bashrc`;
+  let bashrc = "";
+  try { bashrc = fs.readFileSync(bashrcPath, "utf8"); } catch {}
+
+  if (!bashrc.includes("mobvibe")) {
+    const block = `
+# Ensure sshd stays supervised
+if ! pgrep -x runsvdir >/dev/null 2>&1; then
+  nohup runsvdir -P "$PREFIX/var/service" </dev/null &>/dev/null &
+  disown 2>/dev/null || true
+fi
+
+# Reconnect ADB
+if [ -f "$HOME/.adb-connect-addr" ] && ! adb devices 2>/dev/null | grep -q "device$"; then
+  adb connect "$(cat "$HOME/.adb-connect-addr")" &>/dev/null
+  adb forward tcp:9222 localabstract:chrome_devtools_remote &>/dev/null || true
+fi
+
+# Auto-start Mobvibe in tmux
+if command -v proot-distro &>/dev/null && ! curl -s --max-time 2 http://localhost:8080 &>/dev/null; then
+  tmux new-session -d -s mobvibe "proot-distro login ubuntu -- /bin/bash -lc 'source ~/.nvm/nvm.sh; export BUN_INSTALL=\\$HOME/.bun; export PATH=\\$BUN_INSTALL/bin:\\$PATH; exec /opt/mobvibe/start.sh'" 2>/dev/null || true
+fi
+`;
+    fs.writeFileSync(bashrcPath, bashrc + block);
+    log(14, ".bashrc updated.");
+  } else {
+    log(14, ".bashrc already has auto-start block.");
+  }
+
+  // Boot script
+  log(14, "Checking for Termux:Boot...");
+  try {
+    const result = execSync("pm list packages 2>/dev/null | grep com.termux.boot", { env: termuxEnv(), encoding: "utf8" });
+    if (result.includes("com.termux.boot")) {
+      const bootDir = `${TERMUX_HOME}/.termux/boot`;
+      try { fs.mkdirSync(bootDir, { recursive: true }); } catch {}
+      const bootScript = `#!/data/data/com.termux/files/usr/bin/bash
+PREFIX=/data/data/com.termux/files/usr
+export PATH="$PREFIX/bin:$PATH"
+
+# 1. Hold a wakelock
+termux-wake-lock
+
+# 2. Start runit (sshd supervisor)
+if ! pgrep -x runsvdir >/dev/null 2>&1; then
+  nohup runsvdir -P "$PREFIX/var/service" </dev/null &>/dev/null &
+  disown 2>/dev/null || true
+fi
+
+# 3. Reconnect ADB
+if [ -f "$HOME/.adb-connect-addr" ]; then
+  adb connect "$(cat "$HOME/.adb-connect-addr")" &>/dev/null || true
+  adb forward tcp:9222 localabstract:chrome_devtools_remote &>/dev/null || true
+fi
+
+# 4. Phantom-process killer disable
+(
+  adb shell /system/bin/device_config set_sync_disabled_for_tests persistent &>/dev/null || true
+  adb shell /system/bin/device_config put activity_manager max_phantom_processes 2147483647 &>/dev/null || true
+  adb shell settings put global settings_enable_monitor_phantom_procs false &>/dev/null || true
+) &
+
+# 5. Start Mobvibe
+tmux new-session -d -s mobvibe "proot-distro login ubuntu -- /bin/bash -lc 'source ~/.nvm/nvm.sh; export BUN_INSTALL=\\$HOME/.bun; export PATH=\\$BUN_INSTALL/bin:\\$PATH; exec /opt/mobvibe/start.sh'" 2>/dev/null || true
+`;
+      fs.writeFileSync(`${bootDir}/start-all.sh`, bootScript, { mode: 0o755 });
+      // Remove old boot script
+      try { fs.unlinkSync(`${bootDir}/start-mobvibe.sh`); } catch {}
+      log(14, "Boot script created.");
+    }
+  } catch {
+    log(14, "Termux:Boot not installed, skipping boot script.");
+  }
+
+  // Optional integrations
+  try {
+    const result = execSync("pm list packages 2>/dev/null | grep com.termux.widget", { env: termuxEnv(), encoding: "utf8" });
+    if (result.includes("com.termux.widget")) {
+      const shortcutsDir = `${TERMUX_HOME}/.shortcuts`;
+      try { fs.mkdirSync(shortcutsDir, { recursive: true }); } catch {}
+      fs.writeFileSync(`${shortcutsDir}/Claude.sh`, `#!/data/data/com.termux/files/usr/bin/bash\nproot-distro login ubuntu -- /bin/bash -lc "claude"\n`, { mode: 0o755 });
+      log(14, "Termux:Widget shortcut created.");
+    }
+  } catch {}
+
+  log(14, "Setup complete!");
+}
+
+// ---------------------------------------------------------------------------
+// Step runner
+// ---------------------------------------------------------------------------
+let running = false;
+
+async function runAutoSteps(startFrom) {
+  if (running) return;
+  running = true;
+
+  for (let i = startFrom; i <= STEPS.length; i++) {
+    const step = STEPS.find(s => s.id === i);
+    if (!step) continue;
+    if (state[i].status === "done") continue;
+
+    currentStep = i;
+
+    // Interactive steps — pause and wait for user action
+    if (!step.auto) {
+      setStatus(i, "waiting");
+      running = false;
+      return;
+    }
+
+    setStatus(i, "running");
+    try {
+      switch (i) {
+        case 1: await step1(); break;
+        case 2: await step2(); break;
+        case 3: await step3(); break;
+        case 4: await step4(); break;
+        case 5: await step5(); break;
+        case 7: await step7(); break;
+        case 8: await step8(); break;
+        case 9: await step9(); break;
+        case 10: await step10(); break;
+        case 12: await step12(); break;
+        case 13: await step13(); break;
+        case 14: await step14(); break;
+      }
+      setStatus(i, "done");
+    } catch (e) {
+      log(i, `ERROR: ${e.message}`);
+      setStatus(i, "error");
+      running = false;
+      return;
+    }
+  }
+  running = false;
+}
+
+// ---------------------------------------------------------------------------
+// HTML
+// ---------------------------------------------------------------------------
 const HTML = `<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Termux Setup</title>
+<title>Termux + Mobvibe Setup</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: system-ui, sans-serif; background: #0a0a0a; color: #e5e5e5; padding: 16px; max-width: 600px; margin: 0 auto; }
-  h1 { font-size: 1.4em; margin-bottom: 16px; color: #fff; }
-  .step { background: #1a1a1a; border: 1px solid #333; border-radius: 8px; padding: 16px; margin-bottom: 12px; }
-  .step.done { border-color: #22c55e; }
-  .step.active { border-color: #3b82f6; }
-  .step h2 { font-size: 1.1em; margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
-  .step p { font-size: 0.9em; color: #999; margin-bottom: 8px; line-height: 1.5; }
-  .step .status { font-size: 0.85em; padding: 4px 8px; border-radius: 4px; }
-  .status.ok { background: #052e16; color: #22c55e; }
-  .status.pending { background: #1e1b4b; color: #818cf8; }
-  .status.error { background: #450a0a; color: #ef4444; }
-  input { background: #111; border: 1px solid #444; color: #fff; padding: 8px 12px; border-radius: 6px; width: 100%; font-size: 16px; margin-bottom: 8px; }
-  button { background: #3b82f6; color: #fff; border: none; padding: 10px 20px; border-radius: 6px; font-size: 0.95em; cursor: pointer; width: 100%; }
-  button:disabled { opacity: 0.5; cursor: not-allowed; }
-  button:hover:not(:disabled) { background: #2563eb; }
-  .hint { font-size: 0.8em; color: #666; margin-top: 4px; }
-  .row { display: flex; gap: 8px; }
+  body { font-family: system-ui, -apple-system, sans-serif; background: #0a0a0a; color: #e5e5e5; padding: 16px; max-width: 600px; margin: 0 auto; }
+  h1 { font-size: 1.3em; margin-bottom: 4px; color: #fff; }
+  .subtitle { font-size: 0.85em; color: #666; margin-bottom: 16px; border-bottom: 1px solid #333; padding-bottom: 12px; }
+  .step { background: #1a1a1a; border: 1px solid #282828; border-radius: 8px; padding: 12px 14px; margin-bottom: 8px; transition: border-color 0.3s; }
+  .step.done { border-color: #22c55e40; }
+  .step.running { border-color: #3b82f680; }
+  .step.waiting { border-color: #f59e0b80; background: #1a1a1a; }
+  .step.error { border-color: #ef444480; }
+  .step-header { display: flex; align-items: center; gap: 10px; }
+  .step-icon { width: 22px; height: 22px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; font-size: 14px; }
+  .icon-pending { color: #555; }
+  .icon-running { color: #3b82f6; animation: spin 1s linear infinite; }
+  .icon-done { color: #22c55e; }
+  .icon-waiting { color: #f59e0b; }
+  .icon-error { color: #ef4444; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .step-name { font-size: 0.95em; flex: 1; }
+  .step-tag { font-size: 0.7em; padding: 2px 6px; border-radius: 4px; background: #333; color: #888; }
+  .step-tag.interactive { background: #1e3a5f; color: #60a5fa; }
+  .log-box { font-family: "SF Mono", Monaco, monospace; font-size: 0.75em; background: #111; border: 1px solid #222; border-radius: 4px; padding: 8px; margin-top: 8px; max-height: 120px; overflow-y: auto; white-space: pre-wrap; color: #999; line-height: 1.4; }
+  .action-area { margin-top: 10px; }
+  input { background: #111; border: 1px solid #333; color: #fff; padding: 8px 10px; border-radius: 6px; width: 100%; font-size: 15px; margin-bottom: 6px; }
+  input:focus { outline: none; border-color: #3b82f6; }
+  button { background: #3b82f6; color: #fff; border: none; padding: 10px 16px; border-radius: 6px; font-size: 0.9em; cursor: pointer; width: 100%; font-weight: 500; }
+  button:hover { background: #2563eb; }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  button.retry { background: #dc2626; }
+  button.retry:hover { background: #b91c1c; }
+  .row { display: flex; gap: 6px; }
   .row input { flex: 1; }
-  #log { font-family: monospace; font-size: 0.8em; background: #111; padding: 8px; border-radius: 6px; max-height: 150px; overflow-y: auto; white-space: pre-wrap; margin-top: 8px; display: none; }
+  a.oauth-link { display: block; background: #1e3a5f; color: #60a5fa; text-decoration: none; padding: 10px; border-radius: 6px; text-align: center; font-size: 0.9em; margin-top: 8px; word-break: break-all; }
+  a.oauth-link:hover { background: #1e4a7f; }
+  .hint { font-size: 0.75em; color: #555; margin-top: 4px; }
+  .success-banner { background: #052e16; border: 1px solid #22c55e40; border-radius: 8px; padding: 16px; margin-top: 12px; text-align: center; }
+  .success-banner h2 { color: #22c55e; font-size: 1.1em; margin-bottom: 8px; }
+  .success-banner p { color: #86efac; font-size: 0.85em; line-height: 1.6; }
 </style>
 </head>
 <body>
-<h1>Termux Setup Wizard</h1>
-<p style="font-size:0.85em;color:#666;margin-bottom:12px;">ADB pairing survives reboots, but the connection doesn't. Termux will auto-reconnect on launch. Re-run this wizard anytime with: <code style="background:#222;padding:2px 6px;border-radius:4px;">termux-setup-wizard</code></p>
 
-<div class="step" id="step1">
-  <h2><span id="s1icon">1.</span> Acquire Wakelock</h2>
-  <p>Prevents Android from killing Termux in the background.</p>
-  <button onclick="checkWakelock()">Acquire Wakelock</button>
-  <div id="s1status"></div>
-</div>
+<h1>Termux + Mobvibe Setup</h1>
+<div class="subtitle">Automated install wizard</div>
 
-<div class="step" id="step2">
-  <h2><span id="s2icon">2.</span> Enable Wireless Debugging</h2>
-  <p>Go to <b>Settings &rarr; Developer options &rarr; Wireless debugging</b> and enable it.</p>
-  <p class="hint">If you don't see Developer options: go to Settings &rarr; About phone &rarr; tap "Build number" 7 times.</p>
-</div>
-
-<div class="step" id="step3">
-  <h2><span id="s3icon">3.</span> Pair ADB</h2>
-  <p>In Wireless debugging settings, tap <b>"Pair device with pairing code"</b>. Enter the info below quickly (it expires):</p>
-  <div class="row">
-    <input id="pairIp" placeholder="IP (e.g. 192.168.1.5)">
-    <input id="pairPort" placeholder="Port" style="max-width: 80px;">
-    <input id="pairCode" placeholder="Code" style="max-width: 80px;">
-  </div>
-  <button onclick="doPair()" id="pairBtn">Pair</button>
-  <div id="s3status"></div>
-</div>
-
-<div class="step" id="step4">
-  <h2><span id="s4icon">4.</span> Connect ADB</h2>
-  <p>Enter the <b>Port</b> shown at the top of the Wireless debugging screen (the IP is the same as pairing):</p>
-  <div class="row">
-    <input id="connectIp" placeholder="IP">
-    <input id="connectPort" placeholder="Port" style="max-width: 100px;">
-  </div>
-  <button onclick="doConnect()" id="connectBtn">Connect</button>
-  <div id="s4status"></div>
-</div>
-
-<div class="step" id="step5">
-  <h2><span id="s5icon">5.</span> Verify Browser Debugging</h2>
-  <p>Make sure Chrome is open on this device, then verify the debug connection.</p>
-  <button onclick="doForward()" id="forwardBtn">Verify Chrome Debug Access</button>
-  <div id="s5status"></div>
-</div>
-
-<div class="step" id="step5b">
-  <h2><span id="s5bicon">5b.</span> Disable Phantom Process Killer</h2>
-  <p>Android 12+ kills processes when an app spawns more than 32 children. proot-distro easily exceeds this. Disabling fixes random service crashes.</p>
-  <p class="hint">Auto-applied when you connect ADB (step 4) and on every device boot. Click below to re-apply manually.</p>
-  <button onclick="doDisablePhantom()" id="phantomBtn">Re-apply Now</button>
-  <div id="s5bstatus"></div>
-</div>
-
-<div class="step" id="step5c">
-  <h2><span id="s5cicon">5c.</span> Whitelist Termux from Battery Optimization</h2>
-  <p>Even with a wakelock, Android can still kill Termux in Doze mode. Adding Termux to the battery-optimization whitelist is the single biggest defense against random kills.</p>
-  <p class="hint">This opens the Android settings dialog. Tap "Don't optimize" or "Allow" for Termux.</p>
-  <button onclick="doBatteryOpt()" id="batteryBtn">Open Battery Settings</button>
-  <div id="s5cstatus"></div>
-</div>
-
-<div class="step" id="step6">
-  <h2><span id="s6icon">6.</span> Done!</h2>
-  <p>All set. Click below to finish and close the wizard. You can re-run it anytime with <code>termux-setup-wizard</code>.</p>
-  <button onclick="doFinish()" id="finishBtn">Complete Setup</button>
-  <div id="s6status"></div>
-</div>
-
-<div id="log"></div>
+<div id="steps"></div>
+<div id="success" style="display:none"></div>
 
 <script>
-function log(msg) {
-  const el = document.getElementById("log");
-  el.style.display = "block";
-  el.textContent += msg + "\\n";
-  el.scrollTop = el.scrollHeight;
-}
+const STEPS = ${JSON.stringify(STEPS)};
+const state = {};
+STEPS.forEach(s => { state[s.id] = { status: "pending", logs: [] }; });
 
-function setStatus(id, cls, text) {
-  document.getElementById(id).innerHTML = '<div class="status ' + cls + '">' + text + '</div>';
-}
+let oauthUrl = null;
+let step6triggered = false;
 
-function markDone(n) {
-  document.getElementById("step" + n).classList.add("done");
-  document.getElementById("step" + n).classList.remove("active");
-  document.getElementById("s" + n + "icon").textContent = "\\u2713";
-}
-
-function markActive(n) {
-  document.getElementById("step" + n).classList.add("active");
-}
-
-async function api(action, params) {
-  const res = await fetch("/api/" + action, {
-    method: "POST",
-    headers: {"Content-Type": "application/json"},
-    body: JSON.stringify(params)
-  });
-  return res.json();
-}
-
-async function checkWakelock() {
-  const r = await api("check-wakelock");
-  if (r.held) {
-    setStatus("s1status", "ok", "Wakelock is held");
-    markDone(1);
-    markActive(2);
-  } else {
-    setStatus("s1status", "pending", "Wakelock not held. Pull down notifications and tap Termux &rarr; Acquire wakelock");
+function icon(status) {
+  switch(status) {
+    case "pending": return '<span class="step-icon icon-pending">&#9675;</span>';
+    case "running": return '<span class="step-icon icon-running">&#8635;</span>';
+    case "done":    return '<span class="step-icon icon-done">&#10003;</span>';
+    case "waiting": return '<span class="step-icon icon-waiting">&#9632;</span>';
+    case "error":   return '<span class="step-icon icon-error">&#10007;</span>';
+    default: return '<span class="step-icon icon-pending">&#9675;</span>';
   }
 }
 
+function render() {
+  const container = document.getElementById("steps");
+  let html = "";
+  for (const step of STEPS) {
+    const s = state[step.id];
+    const cls = s.status;
+    const tag = step.auto ? "" : '<span class="step-tag interactive">action required</span>';
+    html += '<div class="step ' + cls + '" id="step-' + step.id + '">';
+    html += '<div class="step-header">' + icon(s.status) + '<span class="step-name">' + step.id + '. ' + step.name + '</span>' + tag + '</div>';
+
+    // Log box for running/error steps
+    if (s.status === "running" || s.status === "error") {
+      const last5 = s.logs.slice(-5).join("\\n");
+      html += '<div class="log-box" id="log-' + step.id + '">' + escHtml(last5) + '</div>';
+    }
+
+    // Action areas for interactive steps
+    if (s.status === "waiting" && step.id === 6) {
+      html += '<div class="action-area">';
+      if (oauthUrl) {
+        html += '<a class="oauth-link" href="' + oauthUrl + '" target="_blank">Open this link to sign in to Claude</a>';
+        html += '<p class="hint">After signing in, this step will auto-complete.</p>';
+      } else {
+        html += '<p class="hint">Waiting for OAuth URL...</p>';
+        html += '<div class="log-box" id="log-6">' + escHtml(s.logs.slice(-5).join("\\n")) + '</div>';
+      }
+      html += '</div>';
+    }
+
+    if (s.status === "waiting" && step.id === 11) {
+      html += '<div class="action-area">';
+      html += '<p style="font-size:0.85em;color:#bbb;margin-bottom:8px;">On your phone: Settings > Developer options > Wireless debugging</p>';
+      html += '<p style="font-size:0.85em;color:#999;margin-bottom:6px;">Step 1: Pair</p>';
+      html += '<div class="row"><input id="pair-ip" placeholder="IP address" value="127.0.0.1"><input id="pair-port" placeholder="Port" style="max-width:100px"></div>';
+      html += '<input id="pair-code" placeholder="Pairing code">';
+      html += '<button onclick="doPair()">Pair</button>';
+      html += '<p style="font-size:0.85em;color:#999;margin-top:10px;margin-bottom:6px;">Step 2: Connect</p>';
+      html += '<div class="row"><input id="conn-ip" placeholder="IP address" value="127.0.0.1"><input id="conn-port" placeholder="Port" style="max-width:100px"></div>';
+      html += '<button onclick="doConnect()">Connect</button>';
+      html += '<div class="log-box" id="log-11">' + escHtml(s.logs.slice(-5).join("\\n")) + '</div>';
+      html += '<button class="retry" style="margin-top:8px;background:#555" onclick="fetch(\\'/api/skip-adb\\',{method:\\'POST\\'})">Skip ADB Setup</button>';
+      html += '</div>';
+    }
+
+    // Retry button for errors
+    if (s.status === "error") {
+      html += '<div class="action-area"><button class="retry" onclick="retryStep(' + step.id + ')">Retry</button></div>';
+    }
+
+    html += '</div>';
+  }
+  container.innerHTML = html;
+
+  // Auto-scroll log boxes
+  document.querySelectorAll(".log-box").forEach(el => { el.scrollTop = el.scrollHeight; });
+
+  // Show success banner
+  if (state[14] && state[14].status === "done") {
+    document.getElementById("success").style.display = "block";
+    document.getElementById("success").innerHTML = '<div class="success-banner"><h2>Setup Complete!</h2><p>Mobvibe is running at <a href="http://localhost:8080" style="color:#60a5fa">http://localhost:8080</a><br>Relaunch Termux anytime — services auto-start via .bashrc</p></div>';
+  }
+}
+
+function escHtml(s) {
+  return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+}
+
+// SSE
+const evtSource = new EventSource("/events");
+evtSource.onmessage = function(e) {
+  const data = JSON.parse(e.data);
+  const s = state[data.step];
+  if (!s) return;
+  if (data.status) s.status = data.status;
+  if (data.log) {
+    s.logs.push(data.log);
+    if (s.logs.length > 200) s.logs.shift();
+  }
+  if (data.oauthUrl) oauthUrl = data.oauthUrl;
+  // Auto-trigger interactive steps when they enter waiting state
+  if (data.status === "waiting" && data.step === 6 && !step6triggered) {
+    step6triggered = true;
+    fetch("/api/claude-login", { method: "POST" });
+  }
+  render();
+};
+
+// Actions
 async function doPair() {
-  const ip = document.getElementById("pairIp").value.trim();
-  const port = document.getElementById("pairPort").value.trim();
-  const code = document.getElementById("pairCode").value.trim();
-  if (!ip || !port || !code) { setStatus("s3status", "error", "Enter IP, port, and code"); return; }
-  document.getElementById("pairBtn").disabled = true;
-  setStatus("s3status", "pending", "Pairing...");
-  const r = await api("pair", {address: ip + ":" + port, code: code});
-  document.getElementById("pairBtn").disabled = false;
-  if (r.success) {
-    setStatus("s3status", "ok", "Paired successfully!");
-    markDone(3);
-    markActive(4);
-    // Auto-fill connect IP
-    document.getElementById("connectIp").value = ip;
-    document.getElementById("connectPort").focus();
-    log(r.output);
-  } else {
-    setStatus("s3status", "error", "Pairing failed: " + (r.output || r.error));
-    log(r.output || r.error);
-  }
+  const ip = document.getElementById("pair-ip").value;
+  const port = document.getElementById("pair-port").value;
+  const code = document.getElementById("pair-code").value;
+  if (!port || !code) return;
+  await fetch("/api/adb-pair", {
+    method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({ip, port, code})
+  });
 }
 
 async function doConnect() {
-  const ip = document.getElementById("connectIp").value.trim();
-  const port = document.getElementById("connectPort").value.trim();
-  if (!ip || !port) { setStatus("s4status", "error", "Enter IP and port"); return; }
-  const addr = ip + ":" + port;
-  document.getElementById("connectBtn").disabled = true;
-  setStatus("s4status", "pending", "Connecting...");
-  const r = await api("connect", {address: addr});
-  document.getElementById("connectBtn").disabled = false;
-  if (r.success) {
-    setStatus("s4status", "ok", "Connected to " + addr);
-    markDone(4);
-    markActive(5);
-    log(r.output);
-  } else {
-    setStatus("s4status", "error", "Connection failed: " + (r.output || r.error));
-    log(r.output || r.error);
+  const ip = document.getElementById("conn-ip").value;
+  const port = document.getElementById("conn-port").value;
+  if (!port) return;
+  const res = await fetch("/api/adb-connect", {
+    method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({ip, port})
+  });
+  if (res.ok) {
+    // After connect, trigger remaining auto steps
+    fetch("/api/continue", { method: "POST" });
   }
 }
 
-async function doForward() {
-  document.getElementById("forwardBtn").disabled = true;
-  setStatus("s5status", "pending", "Setting up Chrome debug port...");
-  const r = await api("forward");
-  document.getElementById("forwardBtn").disabled = false;
-  if (r.success) {
-    setStatus("s5status", "ok", "Chrome debugging ready! Browser: " + (r.browser || "detected"));
-    markDone(5);
-    log(r.output);
-  } else {
-    setStatus("s5status", "error", "Failed: " + (r.output || r.error));
-    log(r.output || r.error);
-  }
+async function retryStep(id) {
+  state[id].status = "pending";
+  state[id].logs = [];
+  render();
+  await fetch("/api/retry", {
+    method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({step: id})
+  });
 }
 
-async function doDisablePhantom() {
-  document.getElementById("phantomBtn").disabled = true;
-  setStatus("s5bstatus", "pending", "Running ADB shell commands...");
-  const r = await api("disable-phantom");
-  document.getElementById("phantomBtn").disabled = false;
-  if (r.success) {
-    setStatus("s5bstatus", "ok", "Phantom killer disabled");
-    log(r.output);
-  } else {
-    setStatus("s5bstatus", "error", "Failed: " + (r.output || r.error));
-    log(r.output || r.error);
-  }
-}
-
-async function doBatteryOpt() {
-  document.getElementById("batteryBtn").disabled = true;
-  setStatus("s5cstatus", "pending", "Opening battery optimization settings...");
-  const r = await api("battery-opt");
-  document.getElementById("batteryBtn").disabled = false;
-  if (r.success) {
-    setStatus("s5cstatus", "ok", "Settings opened — tap 'Don't optimize' for Termux");
-    log(r.output);
-  } else {
-    setStatus("s5cstatus", "error", "Failed: " + (r.output || r.error));
-    log(r.output || r.error);
-  }
-}
-
-async function doFinish() {
-  const r = await api("finish");
-  if (r.success) {
-    setStatus("s6status", "ok", "Setup complete! You can close this tab.");
-    markDone(6);
-  }
-}
-
-// Auto-fill local IP
-async function autofillIp() {
-  const r = await api("get-ip");
-  if (r.ip) document.getElementById("pairIp").value = r.ip;
-}
-autofillIp();
-
-markActive(1);
+// Kick off
+fetch("/api/start", { method: "POST" });
+render();
 </script>
 </body>
 </html>`;
 
-function run(cmd, timeout = 10000) {
-  try {
-    return { success: true, output: execSync(cmd, { timeout, encoding: "utf-8" }).trim() };
-  } catch (e) {
-    return { success: false, output: e.stderr?.trim() || e.message, error: e.message };
-  }
-}
-
-const server = http.createServer((req, res) => {
-  if (req.method === "GET") {
-    res.writeHead(200, { "Content-Type": "text/html" });
-    res.end(HTML);
-    return;
-  }
-
-  if (req.method === "POST" && req.url.startsWith("/api/")) {
+// ---------------------------------------------------------------------------
+// HTTP server
+// ---------------------------------------------------------------------------
+function parseBody(req) {
+  return new Promise((resolve) => {
     let body = "";
     req.on("data", c => body += c);
     req.on("end", () => {
-      const params = body ? JSON.parse(body) : {};
-      const action = req.url.replace("/api/", "");
-      let result;
-
-      switch (action) {
-        case "check-wakelock": {
-          // Acquire wakelock and report success
-          run("termux-wake-lock");
-          result = { held: true };
-          break;
-        }
-        case "get-ip": {
-          const r = run("ifconfig 2>/dev/null | grep -oP 'inet \\K[\\d.]+' | grep -v '^127\\.' | head -1");
-          result = { ip: r.success ? r.output : null };
-          break;
-        }
-        case "pair": {
-          result = run(`adb pair ${params.address} ${params.code}`, 15000);
-          result.success = result.output?.includes("Successfully paired") || false;
-          break;
-        }
-        case "connect": {
-          result = run(`adb connect ${params.address}`, 10000);
-          result.success = result.output?.includes("connected") || false;
-          if (result.success) {
-            // Save address for auto-reconnect on next Termux launch
-            const termuxHome = "/data/data/com.termux/files/home";
-            fs.writeFileSync(`${termuxHome}/.adb-connect-addr`, params.address);
-            // Auto-apply phantom-killer disable now that adb is reachable — the
-            // boot script also reapplies, but doing it here closes the window
-            // between pairing and first reboot.
-            const phantomCmds = [
-              "adb shell /system/bin/device_config set_sync_disabled_for_tests persistent",
-              "adb shell /system/bin/device_config put activity_manager max_phantom_processes 2147483647",
-              "adb shell settings put global settings_enable_monitor_phantom_procs false"
-            ];
-            let phantomOut = "";
-            for (const cmd of phantomCmds) {
-              const r = run(cmd, 5000);
-              phantomOut += `$ ${cmd}\n${r.output}\n`;
-            }
-            result.output = (result.output || "") + "\n[auto phantom-killer disable]\n" + phantomOut;
-          }
-          break;
-        }
-        case "forward": {
-          // Find devtools socket and forward
-          const sockets = run("adb shell cat /proc/net/unix 2>/dev/null | grep devtools");
-          if (!sockets.success) {
-            result = { success: false, error: "No ADB device connected or no browser running" };
-            break;
-          }
-          run("adb forward tcp:9222 localabstract:chrome_devtools_remote");
-          const version = run("curl -s --max-time 3 http://localhost:9222/json/version");
-          if (version.success && version.output.includes("Browser")) {
-            try {
-              const info = JSON.parse(version.output);
-              result = { success: true, browser: info.Browser, output: version.output };
-            } catch {
-              result = { success: true, browser: "unknown", output: version.output };
-            }
-          } else {
-            // Try PID-specific socket
-            const pidSocket = sockets.output.split("\n").find(l => l.includes("_"));
-            if (pidSocket) {
-              const name = pidSocket.match(/@(chrome_devtools_remote_\d+)/)?.[1];
-              if (name) {
-                run(`adb forward tcp:9222 localabstract:${name}`);
-                const v2 = run("curl -s --max-time 3 http://localhost:9222/json/version");
-                if (v2.success && v2.output.includes("Browser")) {
-                  try {
-                    const info = JSON.parse(v2.output);
-                    result = { success: true, browser: info.Browser, output: v2.output };
-                  } catch {
-                    result = { success: true, browser: "unknown", output: v2.output };
-                  }
-                } else {
-                  result = { success: false, error: "Chrome devtools not responding", output: v2.output };
-                }
-              }
-            }
-            if (!result) {
-              result = { success: false, error: "Could not connect to Chrome devtools" };
-            }
-          }
-          break;
-        }
-        case "battery-opt": {
-          // The REQUEST_IGNORE_BATTERY_OPTIMIZATIONS intent needs the app's own
-          // permission, so we can't invoke it via adb. Open the full list
-          // instead — user taps Termux and selects "Don't optimize".
-          const r = run("adb shell am start -a android.settings.IGNORE_BATTERY_OPTIMIZATION_SETTINGS", 5000);
-          result = { success: r.success, output: r.output };
-          break;
-        }
-        case "disable-phantom": {
-          const cmds = [
-            "adb shell /system/bin/device_config set_sync_disabled_for_tests persistent",
-            "adb shell /system/bin/device_config put activity_manager max_phantom_processes 2147483647",
-            "adb shell settings put global settings_enable_monitor_phantom_procs false"
-          ];
-          let output = "";
-          let allOk = true;
-          for (const cmd of cmds) {
-            const r = run(cmd, 5000);
-            output += `$ ${cmd}\n${r.output}\n`;
-            if (!r.success) allOk = false;
-          }
-          result = { success: allOk, output };
-          break;
-        }
-        case "finish": {
-          const termuxHome = "/data/data/com.termux/files/home";
-          fs.writeFileSync(`${termuxHome}/.termux-setup-done`, new Date().toISOString());
-          result = { success: true };
-          setTimeout(() => process.exit(0), 1000);
-          break;
-        }
-        default:
-          result = { success: false, error: "Unknown action: " + action };
-      }
-
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(result));
+      try { resolve(JSON.parse(body)); } catch { resolve({}); }
     });
+  });
+}
+
+const server = http.createServer(async (req, res) => {
+  const url = req.url.split("?")[0];
+
+  // SSE endpoint
+  if (url === "/events" && req.method === "GET") {
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive",
+      "Access-Control-Allow-Origin": "*",
+    });
+    res.write(":\n\n");
+    sseClients.add(res);
+    req.on("close", () => sseClients.delete(res));
+
+    // Send current state
+    for (const [id, s] of Object.entries(state)) {
+      res.write(`data: ${JSON.stringify({ step: parseInt(id), status: s.status, log: "" })}\n\n`);
+    }
     return;
   }
 
-  res.writeHead(404);
-  res.end("Not found");
+  // API endpoints
+  if (url === "/api/start" && req.method === "POST") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end('{"ok":true}');
+    runAutoSteps(1);
+    return;
+  }
+
+  if (url === "/api/claude-login" && req.method === "POST") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end('{"ok":true}');
+    setStatus(6, "running");
+    try {
+      await step6start();
+      const credPath = `${ROOTFS}/root/.claude/.credentials.json`;
+      if (fs.existsSync(credPath)) {
+        setStatus(6, "done");
+        runAutoSteps(7);
+      } else {
+        log(6, "Login may not have completed. Check credentials.");
+        setStatus(6, "error");
+      }
+    } catch (e) {
+      log(6, `ERROR: ${e.message}`);
+      setStatus(6, "error");
+    }
+    return;
+  }
+
+  if (url === "/api/adb-pair" && req.method === "POST") {
+    const body = await parseBody(req);
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end('{"ok":true}');
+    try {
+      await step11pair(body.ip, body.port, body.code);
+    } catch (e) {
+      log(11, `Pair error: ${e.message}`);
+    }
+    return;
+  }
+
+  if (url === "/api/adb-connect" && req.method === "POST") {
+    const body = await parseBody(req);
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end('{"ok":true}');
+    try {
+      await step11connect(body.ip, body.port);
+      setStatus(11, "done");
+    } catch (e) {
+      log(11, `Connect error: ${e.message}`);
+      setStatus(11, "error");
+    }
+    return;
+  }
+
+  if (url === "/api/continue" && req.method === "POST") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end('{"ok":true}');
+    // Find next pending step after last done interactive step
+    const nextStep = STEPS.find(s => state[s.id].status === "pending" || state[s.id].status === "waiting");
+    if (nextStep) runAutoSteps(nextStep.id);
+    return;
+  }
+
+  if (url === "/api/retry" && req.method === "POST") {
+    const body = await parseBody(req);
+    const stepId = body.step;
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end('{"ok":true}');
+    if (stepId) {
+      state[stepId].status = "pending";
+      state[stepId].log = [];
+      runAutoSteps(stepId);
+    }
+    return;
+  }
+
+  if (url === "/api/skip-adb" && req.method === "POST") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end('{"ok":true}');
+    setStatus(11, "done");
+    log(11, "ADB setup skipped.");
+    runAutoSteps(12);
+    return;
+  }
+
+  if (url === "/api/state" && req.method === "GET") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ state, currentStep }));
+    return;
+  }
+
+  // Default: serve HTML
+  res.writeHead(200, { "Content-Type": "text/html" });
+  res.end(HTML);
 });
 
 server.listen(PORT, "0.0.0.0", () => {
-  console.log(`Setup wizard running at http://localhost:${PORT}`);
+  console.log(`\n  Setup wizard running at: http://localhost:${PORT}`);
+  console.log("  Open this URL on your phone's browser.\n");
+
   // Try to open in browser
-  try { execSync(`termux-open-url http://localhost:${PORT}`); } catch {}
+  try { execSync("termux-open-url http://localhost:8888", { env: termuxEnv() }); } catch {}
 });
 SERVERJS
 
-# Kill any existing wizard
-kill $(cat /tmp/setup-wizard.pid 2>/dev/null) 2>/dev/null
-
-# Start wizard server
-node "$WIZARD_DIR/server.mjs" &
-WIZARD_PID=$!
-echo $WIZARD_PID > /tmp/setup-wizard.pid
-
-termux-open-url "http://localhost:$WIZARD_PORT" 2>/dev/null
-
 echo ""
 echo "============================================"
-echo "  Setup wizard running at:"
-echo "  http://localhost:$WIZARD_PORT"
-echo ""
-echo "  Open in your browser to continue setup."
-echo "  The wizard will mark setup as complete"
-echo "  once all steps are done."
+echo "  Starting setup wizard on port $WIZARD_PORT"
+echo "  Open http://localhost:$WIZARD_PORT"
 echo "============================================"
+echo ""
 
-# Wait for user to complete - wizard sets the flag
-wait $WIZARD_PID 2>/dev/null
+# Source nvm if available (needed for node)
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+
+# Use Termux's node (installed by the launcher)
+export PATH="$PREFIX/bin:$PATH"
+
+exec node "$WIZARD_DIR/server.mjs"
