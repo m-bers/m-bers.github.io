@@ -5,7 +5,7 @@
 set -e
 
 WIZARD_PORT=8888
-WIZARD_DIR="/tmp/setup-wizard-app"
+WIZARD_DIR="$PREFIX/tmp/setup-wizard-app"
 PREFIX="/data/data/com.termux/files/usr"
 TERMUX_HOME="/data/data/com.termux/files/home"
 ROOTFS="$PREFIX/var/lib/proot-distro/installed-rootfs/ubuntu"

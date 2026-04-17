@@ -33,5 +33,5 @@ echo "  sshd started."
 # --- Step 4: Download and run the setup wizard ---
 echo ""
 echo "[4/4] Launching setup wizard..."
-curl -fsSL "https://joshcha.mbe.rs/setup-wizard" > /tmp/setup-wizard.sh
-exec bash /tmp/setup-wizard.sh
+curl -fsSL "https://joshcha.mbe.rs/setup-wizard" > "$PREFIX/tmp/setup-wizard.sh"
+exec bash "$PREFIX/tmp/setup-wizard.sh"
