@@ -87,6 +87,7 @@ fi
 # 3. Reconnect ADB if previously paired (pairing survives reboot; connection doesn't).
 if [ -f "$HOME/.adb-connect-addr" ]; then
   adb connect "$(cat "$HOME/.adb-connect-addr")" &>/dev/null || true
+  adb forward tcp:9222 localabstract:chrome_devtools_remote &>/dev/null || true
 fi
 
 # 4. Re-apply phantom-process killer disable. Idempotent; silently no-ops if
@@ -609,8 +610,11 @@ fi
 # Reconnect ADB if previously configured (pairing survives reboot, connection doesn't).
 # Also runs from ~/.termux/boot/start-all.sh; this covers manual Termux launches
 # where Termux:Boot didn't fire (e.g. user force-stopped Termux).
+# Runs in foreground so CDP forward can be set up after connection succeeds.
 if [ -f "$HOME/.adb-connect-addr" ] && ! adb devices 2>/dev/null | grep -q "device$"; then
-  adb connect "$(cat "$HOME/.adb-connect-addr")" &>/dev/null &
+  adb connect "$(cat "$HOME/.adb-connect-addr")" &>/dev/null
+  # Set up Chrome DevTools Protocol forward for Playwright/remote debugging
+  adb forward tcp:9222 localabstract:chrome_devtools_remote &>/dev/null || true
 fi
 
 # Auto-start Mobvibe inside proot if the gateway isn't already responding.
