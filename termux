@@ -480,32 +480,62 @@ echo '{"enabledAgents":["claude-acp"]}' > ~/.mobvibe/.config.json
 echo ""
 echo "[proot 8/9] Starting Mobvibe and creating default user..."
 set +e  # Disable exit-on-error for service startup
-"$MOBVIBE_DIR/start.sh" &>/dev/null &
-sleep 12
-# Wait for gateway to be ready
-for i in 1 2 3 4 5; do
-  curl -s http://localhost:3005 >/dev/null 2>&1 && break
-  echo "  Waiting for gateway..."
+
+# Start supervisord in foreground of this proot session. We background it here
+# but the proot session stays alive because we wait below. The Termux-side
+# .bashrc and boot script use tmux for persistence on subsequent launches.
+"$MOBVIBE_DIR/start.sh" &
+SUPERVISORD_PID=$!
+echo "  supervisord PID=$SUPERVISORD_PID"
+
+# Wait for gateway to be ready (up to 90s — first boot may compile drizzle etc.)
+echo "  Waiting for gateway..."
+for i in $(seq 1 18); do
+  curl -s --max-time 2 http://localhost:3005 >/dev/null 2>&1 && break
   sleep 5
 done
 
-# Create default user
+if ! curl -s --max-time 2 http://localhost:3005 >/dev/null 2>&1; then
+  echo "  ERROR: Gateway failed to start. Check /opt/mobvibe/gateway.err"
+  echo "  Continuing anyway..."
+fi
+
+# Create default user (idempotent — sign-up returns 200 even if exists)
+echo "  Creating default user..."
 curl -s -X POST http://localhost:3005/api/auth/sign-up/email \
   -H "Content-Type: application/json" \
-  -d '{"email":"admin@mobvibe.local","password":"admin123","name":"Admin"}' >/dev/null 2>&1
+  -d '{"email":"'"$MOBVIBE_EMAIL"'","password":"'"$MOBVIBE_PASS"'","name":"Admin"}' >/dev/null 2>&1
 
-# Login CLI via expect
-expect -c "
+# Login CLI via expect (registers device + generates masterSecret for E2EE)
+echo "  Logging in CLI (registers device for E2EE)..."
+for attempt in 1 2 3; do
+  expect -c "
 spawn env MOBVIBE_GATEWAY_URL=http://localhost:3005 bun /opt/mobvibe/cli/apps/mobvibe-cli/dist/index.js login
 expect \"Email:\"
-send \"admin@mobvibe.local\r\"
+send \"$MOBVIBE_EMAIL\r\"
 expect \"Password:\"
-send \"admin123\r\"
+send \"$MOBVIBE_PASS\r\"
 expect eof
-" 2>/dev/null || echo "  CLI login failed — run manually later"
+" 2>/dev/null
+  if [ -f ~/.mobvibe/credentials.json ] && grep -q masterSecret ~/.mobvibe/credentials.json 2>/dev/null; then
+    echo "  CLI login + device registration complete."
+    break
+  fi
+  echo "  CLI login attempt $attempt failed, retrying..."
+  sleep 3
+done
 
-# Get E2EE secret and create auto-login page
-E2EE_SECRET=$(cat ~/.mobvibe/credentials.json 2>/dev/null | grep masterSecret | sed 's/.*"masterSecret": *"\([^"]*\)".*/\1/')
+# Extract masterSecret for WebUI E2EE pairing
+E2EE_SECRET=$(grep -o '"masterSecret": *"[^"]*"' ~/.mobvibe/credentials.json 2>/dev/null | sed 's/.*"\([A-Za-z0-9+/=]*\)".*/\1/')
+
+if [ -z "$E2EE_SECRET" ]; then
+  echo "  WARNING: No E2EE master secret found. E2EE pairing will need manual setup."
+fi
+
+# Create auto-login page that:
+# 1. Sets the E2EE master secret in localStorage (WebUI picks it up on init)
+# 2. Signs in with default credentials
+# 3. Redirects to main app
 cat > "$MOBVIBE_DIR/webui/auto-login.html" <<AUTOLOGIN
 <!DOCTYPE html>
 <html>
@@ -515,12 +545,18 @@ cat > "$MOBVIBE_DIR/webui/auto-login.html" <<AUTOLOGIN
 <script>
 (async () => {
   try {
-    localStorage.setItem("mobvibe_e2ee_master_secret", "$E2EE_SECRET");
+    // Store E2EE master secret so WebUI can decrypt sessions immediately.
+    // WebUI's e2ee.loadFromStorage() reads this on init and derives the
+    // content keypair needed to unwrap per-session DEKs.
+    var secret = "$E2EE_SECRET";
+    if (secret) {
+      localStorage.setItem("mobvibe_e2ee_master_secret", secret);
+    }
     const res = await fetch("/api/auth/sign-in/email", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
       credentials: "include",
-      body: JSON.stringify({email: "admin@mobvibe.local", password: "admin123"})
+      body: JSON.stringify({email: "$MOBVIBE_EMAIL", password: "$MOBVIBE_PASS"})
     });
     if (res.ok) window.location.href = "/";
     else document.body.innerHTML = "<p>Login failed: " + res.status + "</p>";
@@ -533,21 +569,19 @@ cat > "$MOBVIBE_DIR/webui/auto-login.html" <<AUTOLOGIN
 </html>
 AUTOLOGIN
 
-# Start CLI daemon
-cd "$MOBVIBE_DIR/cli"
-MOBVIBE_GATEWAY_URL=http://localhost:3005 bun apps/mobvibe-cli/dist/index.js start &>/dev/null &
-
 echo ""
 echo "============================================"
 echo "  Setup complete!"
 echo ""
-echo "  Open in browser:"
-echo "    http://localhost:8080/auto-login.html"
-echo ""
 echo "  To restart services:"
-echo "    proot-distro login ubuntu"
-echo "    /opt/mobvibe/start.sh"
+echo "    tmux kill-session -t mobvibe"
+echo "    (relaunch Termux or run .bashrc)"
 echo "============================================"
+
+# Kill the supervisord we started — the Termux-side tmux auto-start will
+# relaunch it in a persistent session.
+kill $SUPERVISORD_PID 2>/dev/null
+wait $SUPERVISORD_PID 2>/dev/null
 
 INNER_SCRIPT
 
@@ -590,17 +624,35 @@ TERMUX_BASHRC
   echo "Added Mobvibe auto-start and setup wizard to Termux .bashrc"
 fi
 
+# --- Start Mobvibe in persistent tmux session ---
 echo ""
-echo "============================================"
-echo "  All done!"
-echo ""
-echo "  Open http://localhost:8080/auto-login.html"
-echo "  in your phone's browser."
-echo "============================================"
+echo "Starting Mobvibe services..."
+tmux new-session -d -s mobvibe "proot-distro login ubuntu -- /bin/bash -lc 'source ~/.nvm/nvm.sh; export BUN_INSTALL=\$HOME/.bun; export PATH=\$BUN_INSTALL/bin:\$PATH; exec /opt/mobvibe/start.sh'" 2>/dev/null || true
 
-# Run setup wizard immediately (don't wait for next shell).
+# Wait for services to come up
+echo "Waiting for services..."
+for i in $(seq 1 15); do
+  curl -s --max-time 2 http://localhost:8080 >/dev/null 2>&1 && break
+  sleep 3
+done
+
+# --- Run setup wizard (wakelock + ADB + phantom killer + battery opt) ---
 if [ ! -f "$HOME/.termux-setup-done" ]; then
   echo ""
   echo "Launching setup wizard..."
   proot-distro login ubuntu -- bash /opt/termux-setup-wizard.sh
 fi
+
+# --- Open auto-login page in browser ---
+echo ""
+echo "Opening Mobvibe in browser..."
+termux-open-url "http://localhost:8080/auto-login.html" 2>/dev/null || true
+
+echo ""
+echo "============================================"
+echo "  All done!"
+echo ""
+echo "  Mobvibe:  http://localhost:8080"
+echo "  Wizard:   proot-distro login ubuntu -- bash /opt/termux-setup-wizard.sh"
+echo "  Restart:  relaunch Termux (auto-starts via .bashrc)"
+echo "============================================"
