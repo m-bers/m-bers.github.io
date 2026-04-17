@@ -550,12 +550,17 @@ cat > "$MOBVIBE_DIR/webui/auto-login.html" <<AUTOLOGIN
 <script>
 (async () => {
   try {
-    // Store E2EE master secret so WebUI can decrypt sessions immediately.
-    // WebUI's e2ee.loadFromStorage() reads this on init and derives the
-    // content keypair needed to unwrap per-session DEKs.
+    // Store E2EE master secret in BOTH formats so WebUI can decrypt immediately.
+    // Legacy format: single secret (fallback for older WebUI versions).
+    // New format: array of StoredSecret objects (what WebUI actually uses).
     var secret = "$E2EE_SECRET";
     if (secret) {
       localStorage.setItem("mobvibe_e2ee_master_secret", secret);
+      if (!localStorage.getItem("mobvibe_e2ee_secrets")) {
+        localStorage.setItem("mobvibe_e2ee_secrets", JSON.stringify([
+          { secret: secret, fingerprint: "setup", addedAt: Date.now() }
+        ]));
+      }
     }
     const res = await fetch("/api/auth/sign-in/email", {
       method: "POST",
@@ -649,6 +654,14 @@ if [ ! -f "$HOME/.termux-setup-done" ]; then
   echo ""
   echo "Launching setup wizard..."
   proot-distro login ubuntu -- bash /opt/termux-setup-wizard.sh
+
+  # proot --kill-on-exit kills the adb server when the wizard's proot session
+  # exits. Reconnect from Termux so the connection persists.
+  if [ -f "$HOME/.adb-connect-addr" ]; then
+    echo "Reconnecting ADB from Termux..."
+    adb connect "$(cat "$HOME/.adb-connect-addr")" &>/dev/null || true
+    adb forward tcp:9222 localabstract:chrome_devtools_remote &>/dev/null || true
+  fi
 fi
 
 # --- Open auto-login page in browser ---
