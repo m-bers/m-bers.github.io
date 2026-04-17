@@ -655,10 +655,18 @@ if [ ! -f "$HOME/.termux-setup-done" ]; then
   echo "Launching setup wizard..."
   proot-distro login ubuntu -- bash /opt/termux-setup-wizard.sh
 
-  # proot --kill-on-exit kills the adb server when the wizard's proot session
-  # exits. Reconnect from Termux so the connection persists.
+  # Wait for the user to actually finish the wizard. The proot session may
+  # return before the wizard's Node server exits (proot wait is unreliable).
+  echo "Waiting for wizard to complete..."
+  until [ -f "$HOME/.termux-setup-done" ]; do sleep 2; done
+  echo "Wizard complete."
+
+  # Reconnect ADB from Termux (the wizard connected inside proot, but the
+  # proot adb server may be orphaned on exit).
   if [ -f "$HOME/.adb-connect-addr" ]; then
     echo "Reconnecting ADB from Termux..."
+    adb kill-server &>/dev/null || true
+    sleep 1
     adb connect "$(cat "$HOME/.adb-connect-addr")" &>/dev/null || true
     adb forward tcp:9222 localabstract:chrome_devtools_remote &>/dev/null || true
   fi
