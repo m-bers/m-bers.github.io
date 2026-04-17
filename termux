@@ -150,6 +150,10 @@ echo "[7/7] Bootstrapping inside proot Ubuntu..."
 proot-distro login ubuntu -- bash -c 'bash -s' <<'INNER_SCRIPT'
 set -e
 
+# These must be defined inside the heredoc (quoted heredoc = no outer expansion)
+MOBVIBE_EMAIL="admin@mobvibe.local"
+MOBVIBE_PASS="admin123"
+
 echo ""
 echo "=== Inside proot Ubuntu ==="
 echo ""
